@@ -1,0 +1,12 @@
+pandas
+numpy
+requests
+beautifulsoup4
+lxml
+scikit-learn
+joblib
+openpyxl
+lunardate
+xgboost
+matplotlib
+python-dateutil
