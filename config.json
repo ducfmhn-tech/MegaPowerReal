@@ -1,0 +1,10 @@
+{
+  "n_periods": 100,
+  "window": 50,
+  "threshold_retrain_pct": 50,
+  "mega_max": 45,
+  "power_max": 55,
+  "save_dir": "data",
+  "models_dir": "models",
+  "reports_dir": "outputs"
+}
