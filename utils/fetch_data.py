@@ -1,9 +1,13 @@
 """
 fetch_data.py
-- fetch 6/45 & 6/55 results from ketquadientoan.com (table parser)
-- save CSV to data/
+- Fetch Mega 6/45 & Power 6/55 results from ketquadientoan.com
+- Clean & normalize data
+- Save to CSV (data/mega_6_45_raw.csv, data/power_6_55_raw.csv)
 """
-import requests, re, os
+
+import os
+import re
+import requests
 import pandas as pd
 from bs4 import BeautifulSoup
 from datetime import datetime
@@ -11,66 +15,100 @@ from datetime import datetime
 MEGA_URL = "https://www.ketquadientoan.com/tat-ca-ky-xo-so-mega-6-45.html"
 POWER_URL = "https://www.ketquadientoan.com/tat-ca-ky-xo-so-power-655.html"
 
+
+# -----------------------------
+# Utility: Parse date safely
+# -----------------------------
 def _normalize_date(text):
-    # try parsing dd/mm/YYYY or other formats
-    for fmt in ("%d/%m/%Y", "%Y-%m-%d", "%d-%m-%Y"):
+    text = text.strip()
+    for fmt in ("%d/%m/%Y", "%d-%m-%Y", "%Y-%m-%d"):
         try:
-            return datetime.strptime(text.strip(), fmt).strftime("%Y-%m-%d")
-        except:
+            return datetime.strptime(text, fmt).strftime("%Y-%m-%d")
+        except ValueError:
             continue
-    # fallback via pandas
     try:
         return pd.to_datetime(text, dayfirst=True).strftime("%Y-%m-%d")
-    except:
+    except Exception:
         return None
 
-def _parse_table_html(html, limit=200):
+
+# -----------------------------
+# Parse HTML table for one game
+# -----------------------------
+def _parse_ketquadientoan(html, limit=200):
     soup = BeautifulSoup(html, "lxml")
-    # Try several selectors to be robust
-    rows = soup.select("table tbody tr")
-    if not rows:
-        rows = soup.select("table tr")
     out = []
-    for tr in rows[:limit]:
-        cols = [td.get_text(strip=True) for td in tr.find_all(["td","th"])]
-        if not cols:
+
+    # Lấy tất cả các hàng có ngày + dãy số (2 cột)
+    for tr in soup.select("table tr"):
+        tds = tr.find_all("td")
+        if len(tds) < 2:
             continue
-        # find first occurrence of a date-like token and 6 numbers
-        nums = re.findall(r"\d+", " ".join(cols))
+
+        date_text = tds[0].get_text(strip=True)
+        nums_text = tds[1].get_text(" ", strip=True)
+        nums = re.findall(r"\b\d{1,2}\b", nums_text)
         if len(nums) < 6:
             continue
-        # heuristics: date token usually first
-        date_token = cols[0]
-        date_iso = _normalize_date(date_token) or None
-        # take last 6 numbers as the draw numbers (common pattern)
-        last6 = list(map(int, nums[-6:]))
-        last6.sort()
-        row = {"date": date_iso, "n1": last6[0], "n2": last6[1], "n3": last6[2],
-               "n4": last6[3], "n5": last6[4], "n6": last6[5]}
-        out.append(row)
-    return pd.DataFrame(out)
 
+        nums = list(map(int, nums[:6]))
+        nums.sort()
+        date_iso = _normalize_date(date_text)
+        if not date_iso:
+            continue
+
+        row = {"date": date_iso}
+        for i, n in enumerate(nums, 1):
+            row[f"n{i}"] = n
+        out.append(row)
+
+    df = pd.DataFrame(out)
+    df = df.drop_duplicates(subset=["date"]).reset_index(drop=True)
+    return df.head(limit)
+
+
+# -----------------------------
+# Fetch from URL
+# -----------------------------
 def _fetch_url(url, limit=200):
     try:
-        r = requests.get(url, timeout=20, headers={"User-Agent":"Mozilla/5.0"})
+        r = requests.get(url, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
         r.encoding = r.apparent_encoding
-        return _parse_table_html(r.text, limit=limit)
+        return _parse_ketquadientoan(r.text, limit=limit)
     except Exception as e:
-        print("fetch error", url, e)
+        print(f"❌ fetch error {url}: {e}")
         return pd.DataFrame()
 
+
+# -----------------------------
+# Fetch all (Mega + Power)
+# -----------------------------
 def fetch_all_data(limit=100, save_dir="data"):
     os.makedirs(save_dir, exist_ok=True)
+
+    print("🔹 Fetching Mega 6/45...")
     mega_df = _fetch_url(MEGA_URL, limit=limit)
+    print("🔹 Fetching Power 6/55...")
     power_df = _fetch_url(POWER_URL, limit=limit)
-    # dedupe and drop invalid date rows
-    mega_df = mega_df.dropna(subset=["date"]).drop_duplicates(subset=["date","n1","n2","n3","n4","n5","n6"]).reset_index(drop=True)
-    power_df = power_df.dropna(subset=["date"]).drop_duplicates(subset=["date","n1","n2","n3","n4","n5","n6"]).reset_index(drop=True)
-    mega_df = mega_df.sort_values("date", ascending=True).reset_index(drop=True)
-    power_df = power_df.sort_values("date", ascending=True).reset_index(drop=True)
+
+    # Clean up
+    mega_df = mega_df.dropna(subset=["date"]).sort_values("date").reset_index(drop=True)
+    power_df = power_df.dropna(subset=["date"]).sort_values("date").reset_index(drop=True)
+
+    # Save to CSV
     mega_path = os.path.join(save_dir, "mega_6_45_raw.csv")
     power_path = os.path.join(save_dir, "power_6_55_raw.csv")
     mega_df.to_csv(mega_path, index=False)
     power_df.to_csv(power_path, index=False)
-    print(f"Fetched mega:{len(mega_df)} rows, power:{len(power_df)} rows")
+
+    print(f"✅ Saved: {len(mega_df)} Mega rows, {len(power_df)} Power rows")
     return mega_df, power_df
+
+
+# -----------------------------
+# Manual test
+# -----------------------------
+if __name__ == "__main__":
+    m, p = fetch_all_data(limit=20)
+    print(m.tail(3))
+    print(p.tail(3))
