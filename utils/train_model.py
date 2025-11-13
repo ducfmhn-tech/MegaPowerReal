@@ -98,8 +98,8 @@ def ensemble_predict_topk(mega_df, power_df, rf_path, gb_path, topk=6, save_dir=
     pp_counts = [sum(pw[f"n{i}"].isin([n]).sum() for i in range(1,7)) for n in range(1, max_p+1)]
     sp = [pp_counts[i] + 0.3*mp_counts[i] for i in range(max_p)]
     # choose topk power
-    import numpy as np as _np
-    idxs_p = _np.array(sp).argsort()[-topk:][::-1]
+    import numpy as np 
+    idxs_p = np.array(sp).argsort()[-topk:][::-1]
     pred_power = sorted([int(i+1) for i in idxs_p])
     # return
     probs_dict = {"mega_probs": probs.tolist(), "power_scores": sp}
