@@ -1,83 +1,147 @@
 """
-MegaPowerReal - main entry
+main.py — Entry point for MegaPowerReal
+--------------------------------------
+- Fetch historical data (50–100 draws)
+- Train + Predict
+- Compare predictions vs real results (if new data)
+- Save reports (.xlsx + JSON + logs)
+- Send email results
 """
-import os, json
+
+import os, json, pandas as pd
+from datetime import datetime
 from utils.fetch_data import fetch_all_data
-from utils.preprocess import preprocess_dfs
-from utils.features import build_features_for_all
 from utils.train_model import train_models_and_save, ensemble_predict_topk
-from utils.error_analysis import check_and_retrain_if_needed
-from utils.report import save_report_xlsx
-from utils.email_sender import send_email_smtp
+from utils.send_email import send_report_email
 
-mega_df, power_df = fetch_all_data(limit=100, save_dir="data")
-print("✅ Mega last date:", mega_df['date'].iloc[-1] if not mega_df.empty else 'N/A')
-print("✅ Power last date:", power_df['date'].iloc[-1] if not power_df.empty else 'N/A')
+# ================================
+# CONFIG
+# ================================
+CFG = {
+    "n_periods": 100,
+    "save_dir": "data",
+    "models_dir": "models",
+    "reports_dir": "reports",
+    "email_sender": "asusgo202122@gmail.com",
+    "email_receiver": "ducfm.hn@gmail.com",
+    "email_pass": os.getenv("EMAIL_APP_PASS", "YOUR_APP_PASSWORD"),  # GitHub Secret
+}
 
-# load config
-with open("config.json", "r", encoding="utf-8") as f:
-    CFG = json.load(f)
+os.makedirs(CFG["save_dir"], exist_ok=True)
+os.makedirs(CFG["models_dir"], exist_ok=True)
+os.makedirs(CFG["reports_dir"], exist_ok=True)
 
-SAVE_DIR = CFG.get("save_dir", "data")
-MODELS_DIR = CFG.get("models_dir", "models")
-REPORTS_DIR = CFG.get("reports_dir", "outputs")
-os.makedirs(SAVE_DIR, exist_ok=True)
-os.makedirs(MODELS_DIR, exist_ok=True)
-os.makedirs(REPORTS_DIR, exist_ok=True)
 
-def run_pipeline():
-    # 1. fetch raw
-    mega_df, power_df = fetch_all_data(limit=CFG.get("n_periods",100), save_dir=SAVE_DIR)
-
-    # 2. preprocess
-    mega_df, power_df = preprocess_dfs(mega_df, power_df, save_dir=SAVE_DIR)
-
-    # 3. feature engineering (window-based & lunar/ngũ hành)
-    feat_meta = build_features_for_all(mega_df, power_df, window=CFG.get("window",50), save_dir=SAVE_DIR)
-
-    # 4. Train RF + GB and save models
-    rf_model_path, gb_model_path, metrics = train_models_and_save(
-        mega_df, power_df,
-        window=CFG.get("window",50),
-        save_dir=SAVE_DIR, models_dir=MODELS_DIR
-    )
-
-    # 5. Ensemble predict top-6 for Mega and Power
-    pred_mega, pred_power, probs = ensemble_predict_topk(
-        mega_df, power_df, rf_model_path, gb_model_path,
-        topk=6, save_dir=SAVE_DIR
-    )
-
-    # persist last_prediction.json
+# ================================
+# 1️⃣  LOAD OR INIT LAST PREDICTION
+# ================================
+LAST_JSON = os.path.join(CFG["save_dir"], "last_prediction.json")
+if os.path.exists(LAST_JSON):
+    with open(LAST_JSON, "r", encoding="utf-8") as f:
+        last_pred = json.load(f)
+else:
     last_pred = {
-        "timestamp": __import__("datetime").datetime.now().isoformat(),
-        "Mega": pred_mega,
-        "Power": pred_power,
-        "probs": probs
+        "date": None,
+        "pred_mega": [],
+        "pred_power": [],
+        "accuracy_mega": None,
+        "accuracy_power": None,
     }
-    with open(os.path.join(SAVE_DIR, "last_prediction.json"), "w", encoding="utf-8") as f:
-        json.dump(last_pred, f, ensure_ascii=False, indent=2)
 
-    # 6. When there's a new actual draw (check inside function), compare & retrain if needed
-    retrain_info = check_and_retrain_if_needed(
-        save_dir=SAVE_DIR, models_dir=MODELS_DIR, config=CFG
+
+# ================================
+# 2️⃣  PIPELINE
+# ================================
+def run_pipeline():
+    print("🔹 Fetching Mega 6/45...")
+    mega_df, power_df = fetch_all_data(limit=CFG["n_periods"], save_dir=CFG["save_dir"])
+
+    # If fetch failed
+    if mega_df.empty or power_df.empty:
+        print("⚠️ No data fetched → skip training")
+        return
+
+    print(f"✅ Got Mega={len(mega_df)}, Power={len(power_df)} rows")
+
+    # Train (or retrain)
+    rf_path, gb_path, metrics = train_models_and_save(
+        mega_df, power_df, window=50,
+        save_dir=CFG["save_dir"], models_dir=CFG["models_dir"]
     )
 
-    # 7. Save report
-    report_path = save_report_xlsx(
-        save_dir=SAVE_DIR, reports_dir=REPORTS_DIR,
-        mega_df=mega_df, power_df=power_df,
-        pred_mega=pred_mega, pred_power=pred_power,
-        metrics=metrics, retrain_info=retrain_info
+    # Predict
+    pred_mega, pred_power, probs = ensemble_predict_topk(
+        mega_df, power_df, rf_path, gb_path, topk=6
     )
 
-    # 8. Send email (reads env secrets)
-    subject = f"[MegaPowerReal] Report {__import__('datetime').datetime.now().date()}"
-    body = f"Predicted Mega: {pred_mega}\nPredicted Power: {pred_power}\nReport: {report_path}"
-    send_email_smtp(subject, body, attachment_path=report_path)
+    # Save new prediction
+    today = datetime.now().strftime("%Y-%m-%d")
+    new_pred = {
+        "date": today,
+        "pred_mega": pred_mega,
+        "pred_power": pred_power,
+        "metrics": metrics,
+    }
 
-    print("Pipeline finished. Report:", report_path)
-    return report_path
+    with open(LAST_JSON, "w", encoding="utf-8") as f:
+        json.dump(new_pred, f, ensure_ascii=False, indent=2)
 
+    print(f"💾 Saved last_prediction.json")
+
+    # ===============================
+    # 3️⃣ Compare with new real result
+    # ===============================
+    try:
+        latest_real_mega = list(map(int, mega_df.tail(1)[[f"n{i}" for i in range(1, 7)]].values.flatten()))
+        latest_real_power = list(map(int, power_df.tail(1)[[f"n{i}" for i in range(1, 7)]].values.flatten()))
+        latest_date = mega_df.tail(1)["date"].values[0]
+        
+        if last_pred["date"] and last_pred["date"] != latest_date:
+            acc_mega = len(set(last_pred["pred_mega"]) & set(latest_real_mega)) / 6
+            acc_power = len(set(last_pred["pred_power"]) & set(latest_real_power)) / 6
+            print(f"📈 Accuracy Mega={acc_mega:.2%}, Power={acc_power:.2%}")
+            new_pred["accuracy_mega"] = acc_mega
+            new_pred["accuracy_power"] = acc_power
+        else:
+            print("⚠️ No new draw found or same date → skip accuracy check")
+
+    except Exception as e:
+        print("⚠️ Error comparing with real results:", e)
+
+    # ===============================
+    # 4️⃣ Save report
+    # ===============================
+    report_path = os.path.join(CFG["reports_dir"], f"mega_power_report_{today}.xlsx")
+    with pd.ExcelWriter(report_path, engine="openpyxl") as writer:
+        mega_df.to_excel(writer, sheet_name="Mega_6_45", index=False)
+        power_df.to_excel(writer, sheet_name="Power_6_55", index=False)
+        pd.DataFrame([new_pred]).to_excel(writer, sheet_name="Prediction", index=False)
+    print(f"📊 Report saved → {report_path}")
+
+    # ===============================
+    # 5️⃣ Send email
+    # ===============================
+    subject = f"Mega-Power Report {today}"
+    body = f"""
+📅 Date: {today}
+🎯 Mega prediction: {pred_mega}
+🎯 Power prediction: {pred_power}
+📈 RF acc: {metrics.get('acc_rf',0):.3f}, GB acc: {metrics.get('acc_gb',0):.3f}
+"""
+    send_report_email(
+        sender=CFG["email_sender"],
+        password=CFG["email_pass"],
+        receiver=CFG["email_receiver"],
+        subject=subject,
+        body=body,
+        attachment_path=report_path,
+    )
+
+    print("✅ Email sent successfully!")
+
+
+# ================================
+# ENTRY POINT
+# ================================
 if __name__ == "__main__":
     run_pipeline()
