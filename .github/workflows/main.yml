@@ -1,34 +1,23 @@
 name: MegaPowerReal Daily Run
-
 on:
   schedule:
-    - cron: "0 3 * * *"   # 03:00 UTC = 10:00 VN
+    - cron: "0 3 * * *"  # 10:00 AM VN (UTC+7)
   workflow_dispatch:
 
 jobs:
   run:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
+      - name: Checkout repo
+        uses: actions/checkout@v3
       - name: Setup Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.10'
-
-      - name: Install deps
-        run: pip install -r requirements.txt
-
-      - name: Run pipeline
+          python-version: "3.10"
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+      - name: Run MegaPowerReal
         env:
-          GMAIL_USER: ${{ secrets.GMAIL_USER }}
-          GMAIL_PASS: ${{ secrets.GMAIL_PASS }}
-          GMAIL_RECEIVER: ${{ secrets.GMAIL_RECEIVER }}
+          EMAIL_APP_PASS: ${{ secrets.EMAIL_APP_PASS }}
         run: python main.py
-
-      - name: Upload outputs
-        uses: actions/upload-artifact@v4
-        with:
-          name: mega-power-outputs
-          path: outputs/**
