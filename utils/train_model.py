@@ -72,6 +72,7 @@ def train_models_and_save(mega_df, power_df, window=50, save_dir="data", models_
     X, y = build_Xy(mega_df, power_df, window=window)
     if X is None or len(X) == 0:
         print("⚠️ Not enough data to train — creating placeholder models")
+        return "", "", {}
         # Save dummy models (so pipeline continues)
         rf_path = os.path.join(models_dir, "rf_pernum_mega.joblib")
         gb_path = os.path.join(models_dir, "gb_pernum_mega.joblib")
@@ -126,8 +127,8 @@ def ensemble_predict_topk(mega_df, power_df, rf_path, gb_path, topk=6, save_dir=
         ]
     )
 
-    rf = joblib.load(rf_path) if os.path.exists(rf_path) else None
-    gb = joblib.load(gb_path) if os.path.exists(gb_path) else None
+    rf = joblib.load(rf_path) if rf_path and os.path.exists(rf_path) else None
+    gb = joblib.load(gb_path) if gb_path and os.path.exists(gb_path) else None
 
     probs_rf = rf.predict_proba(Xcur)[:, 1] if rf else np.zeros(len(Xcur))
     probs_gb = gb.predict_proba(Xcur)[:, 1] if gb else np.zeros(len(Xcur))
