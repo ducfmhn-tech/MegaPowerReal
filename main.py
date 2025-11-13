@@ -10,6 +10,10 @@ from utils.error_analysis import check_and_retrain_if_needed
 from utils.report import save_report_xlsx
 from utils.email_sender import send_email_smtp
 
+mega_df, power_df = fetch_all_data(limit=100, save_dir="data")
+print("✅ Mega last date:", mega_df['date'].iloc[-1] if not mega_df.empty else 'N/A')
+print("✅ Power last date:", power_df['date'].iloc[-1] if not power_df.empty else 'N/A')
+
 # load config
 with open("config.json", "r", encoding="utf-8") as f:
     CFG = json.load(f)
