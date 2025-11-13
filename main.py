@@ -12,7 +12,7 @@ import os, json, pandas as pd
 from datetime import datetime
 from utils.fetch_data import fetch_all_data
 from utils.train_model import train_models_and_save, ensemble_predict_topk
-from utils.email_utils import send_email_with_report
+from utils.send_email import send_email_with_report
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
