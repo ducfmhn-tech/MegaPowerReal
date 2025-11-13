@@ -1,147 +1,168 @@
 """
-main.py — Entry point for MegaPowerReal
---------------------------------------
-- Fetch historical data (50–100 draws)
-- Train + Predict
-- Compare predictions vs real results (if new data)
-- Save reports (.xlsx + JSON + logs)
-- Send email results
+MegaPowerReal - Main Pipeline
+Author: ChatGPT
+Version: 2025-11
+Description:
+  - Fetch Mega 6/45 & Power 6/55 data from ketquadientoan.com
+  - Train + Predict + Evaluate + Auto Retrain
+  - Generate Excel report + Send Email automatically (GitHub Actions)
 """
 
 import os, json, pandas as pd
 from datetime import datetime
 from utils.fetch_data import fetch_all_data
 from utils.train_model import train_models_and_save, ensemble_predict_topk
-from utils.send_email import send_report_email
+from utils.email_utils import send_email_with_report
 
-# ================================
-# CONFIG
-# ================================
+# === CONFIG ===
+SAVE_DIR = "data"
+MODELS_DIR = "models"
+LOG_FILE = os.path.join(SAVE_DIR, "daily_log.txt")
+LAST_PRED_PATH = os.path.join(SAVE_DIR, "last_prediction.json")
+os.makedirs(SAVE_DIR, exist_ok=True)
+os.makedirs(MODELS_DIR, exist_ok=True)
+
 CFG = {
     "n_periods": 100,
-    "save_dir": "data",
-    "models_dir": "models",
-    "reports_dir": "reports",
-    "email_sender": "asusgo202122@gmail.com",
-    "email_receiver": "ducfm.hn@gmail.com",
-    "email_pass": os.getenv("EMAIL_APP_PASS", "YOUR_APP_PASSWORD"),  # GitHub Secret
+    "window": 50,
+    "gmail_user": os.getenv("GMAIL_USER"),
+    "gmail_pass": os.getenv("GMAIL_PASS"),
+    "receiver_email": os.getenv("RECEIVER_EMAIL"),
 }
 
-os.makedirs(CFG["save_dir"], exist_ok=True)
-os.makedirs(CFG["models_dir"], exist_ok=True)
-os.makedirs(CFG["reports_dir"], exist_ok=True)
+# === UTILS ===
+def log(msg: str):
+    t = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    line = f"[{t}] {msg}"
+    print(line)
+    with open(LOG_FILE, "a", encoding="utf-8") as f:
+        f.write(line + "\n")
 
+def load_last_prediction():
+    if not os.path.exists(LAST_PRED_PATH):
+        return {}
+    try:
+        with open(LAST_PRED_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except:
+        return {}
 
-# ================================
-# 1️⃣  LOAD OR INIT LAST PREDICTION
-# ================================
-LAST_JSON = os.path.join(CFG["save_dir"], "last_prediction.json")
-if os.path.exists(LAST_JSON):
-    with open(LAST_JSON, "r", encoding="utf-8") as f:
-        last_pred = json.load(f)
-else:
-    last_pred = {
-        "date": None,
-        "pred_mega": [],
-        "pred_power": [],
-        "accuracy_mega": None,
-        "accuracy_power": None,
+def save_last_prediction(pred_mega, pred_power):
+    data = {
+        "timestamp": datetime.now().isoformat(),
+        "mega_pred": pred_mega,
+        "power_pred": pred_power,
     }
+    with open(LAST_PRED_PATH, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    log(f"Saved last_prediction.json: {data}")
 
-
-# ================================
-# 2️⃣  PIPELINE
-# ================================
+# === MAIN PIPELINE ===
 def run_pipeline():
-    print("🔹 Fetching Mega 6/45...")
-    mega_df, power_df = fetch_all_data(limit=CFG["n_periods"], save_dir=CFG["save_dir"])
+    log("🚀 Starting MegaPowerReal Pipeline...")
 
-    # If fetch failed
-    if mega_df.empty or power_df.empty:
-        print("⚠️ No data fetched → skip training")
+    # 1️⃣ Fetch data
+    log("🔹 Fetching Mega 6/45...")
+    mega_df, power_df = fetch_all_data(limit=CFG["n_periods"], save_dir=SAVE_DIR)
+    log(f"✅ Mega rows: {len(mega_df)}, Power rows: {len(power_df)}")
+
+    if len(mega_df) < 50 or len(power_df) < 50:
+        log("❌ Not enough data to train.")
         return
 
-    print(f"✅ Got Mega={len(mega_df)}, Power={len(power_df)} rows")
-
-    # Train (or retrain)
+    # 2️⃣ Train models
+    log("🧠 Training models...")
     rf_path, gb_path, metrics = train_models_and_save(
-        mega_df, power_df, window=50,
-        save_dir=CFG["save_dir"], models_dir=CFG["models_dir"]
+        mega_df, power_df, window=CFG["window"], save_dir=SAVE_DIR, models_dir=MODELS_DIR
     )
+    log(f"✅ Training completed | RF acc={metrics.get('acc_rf'):.3f} | GB acc={metrics.get('acc_gb'):.3f}")
 
-    # Predict
+    # 3️⃣ Predict next draw
+    log("🎯 Predicting next numbers...")
     pred_mega, pred_power, probs = ensemble_predict_topk(
-        mega_df, power_df, rf_path, gb_path, topk=6
+        mega_df, power_df, rf_path, gb_path, topk=6, save_dir=SAVE_DIR
     )
+    save_last_prediction(pred_mega, pred_power)
 
-    # Save new prediction
-    today = datetime.now().strftime("%Y-%m-%d")
-    new_pred = {
-        "date": today,
-        "pred_mega": pred_mega,
-        "pred_power": pred_power,
-        "metrics": metrics,
-    }
+    log(f"🎲 Mega 6/45 predicted: {pred_mega}")
+    log(f"💫 Power 6/55 predicted: {pred_power}")
 
-    with open(LAST_JSON, "w", encoding="utf-8") as f:
-        json.dump(new_pred, f, ensure_ascii=False, indent=2)
+    # 4️⃣ Compare with last real draw (if exists)
+    real_mega_path = os.path.join(SAVE_DIR, "mega_6_45_raw.csv")
+    real_power_path = os.path.join(SAVE_DIR, "power_6_55_raw.csv")
+    real_nums_mega, real_nums_power = [], []
 
-    print(f"💾 Saved last_prediction.json")
-
-    # ===============================
-    # 3️⃣ Compare with new real result
-    # ===============================
     try:
-        latest_real_mega = list(map(int, mega_df.tail(1)[[f"n{i}" for i in range(1, 7)]].values.flatten()))
-        latest_real_power = list(map(int, power_df.tail(1)[[f"n{i}" for i in range(1, 7)]].values.flatten()))
-        latest_date = mega_df.tail(1)["date"].values[0]
-        
-        if last_pred["date"] and last_pred["date"] != latest_date:
-            acc_mega = len(set(last_pred["pred_mega"]) & set(latest_real_mega)) / 6
-            acc_power = len(set(last_pred["pred_power"]) & set(latest_real_power)) / 6
-            print(f"📈 Accuracy Mega={acc_mega:.2%}, Power={acc_power:.2%}")
-            new_pred["accuracy_mega"] = acc_mega
-            new_pred["accuracy_power"] = acc_power
-        else:
-            print("⚠️ No new draw found or same date → skip accuracy check")
-
+        if os.path.exists(real_mega_path):
+            dfm = pd.read_csv(real_mega_path)
+            last = dfm.iloc[-1]
+            real_nums_mega = sorted([int(last[f"n{i}"]) for i in range(1,7)])
+        if os.path.exists(real_power_path):
+            dfp = pd.read_csv(real_power_path)
+            lastp = dfp.iloc[-1]
+            real_nums_power = sorted([int(lastp[f"n{i}"]) for i in range(1,7)])
     except Exception as e:
-        print("⚠️ Error comparing with real results:", e)
+        log(f"⚠️ Error reading real numbers: {e}")
 
-    # ===============================
-    # 4️⃣ Save report
-    # ===============================
-    report_path = os.path.join(CFG["reports_dir"], f"mega_power_report_{today}.xlsx")
+    def accuracy(pred, real):
+        if not real:
+            return 0.0
+        return len(set(pred) & set(real)) / 6
+
+    acc_mega = accuracy(pred_mega, real_nums_mega)
+    acc_power = accuracy(pred_power, real_nums_power)
+    log(f"📊 Accuracy: Mega={acc_mega:.2%} | Power={acc_power:.2%}")
+
+    # 5️⃣ Generate Excel report
+    now_tag = datetime.now().strftime("%Y%m%d_%H%M%S")
+    report_path = os.path.join(SAVE_DIR, f"mega_power_report_{now_tag}.xlsx")
+
     with pd.ExcelWriter(report_path, engine="openpyxl") as writer:
-        mega_df.to_excel(writer, sheet_name="Mega_6_45", index=False)
-        power_df.to_excel(writer, sheet_name="Power_6_55", index=False)
-        pd.DataFrame([new_pred]).to_excel(writer, sheet_name="Prediction", index=False)
-    print(f"📊 Report saved → {report_path}")
+        mega_df.to_excel(writer, index=False, sheet_name="Mega_6_45")
+        power_df.to_excel(writer, index=False, sheet_name="Power_6_55")
+        pd.DataFrame({
+            "Mega_Pred": [pred_mega],
+            "Power_Pred": [pred_power],
+            "Real_Mega": [real_nums_mega],
+            "Real_Power": [real_nums_power],
+            "Acc_Mega": [acc_mega],
+            "Acc_Power": [acc_power],
+            "Timestamp": [datetime.now().isoformat()]
+        }).to_excel(writer, index=False, sheet_name="Prediction_Report")
 
-    # ===============================
-    # 5️⃣ Send email
-    # ===============================
-    subject = f"Mega-Power Report {today}"
-    body = f"""
-📅 Date: {today}
-🎯 Mega prediction: {pred_mega}
-🎯 Power prediction: {pred_power}
-📈 RF acc: {metrics.get('acc_rf',0):.3f}, GB acc: {metrics.get('acc_gb',0):.3f}
-"""
-    send_report_email(
-        sender=CFG["email_sender"],
-        password=CFG["email_pass"],
-        receiver=CFG["email_receiver"],
-        subject=subject,
-        body=body,
-        attachment_path=report_path,
-    )
+    log(f"📁 Report saved to: {report_path}")
 
-    print("✅ Email sent successfully!")
+    # 6️⃣ Send email
+    try:
+        send_email_with_report(
+            sender=CFG["gmail_user"],
+            password=CFG["gmail_pass"],
+            recipient=CFG["receiver_email"],
+            subject=f"[MegaPowerReal] Báo cáo dự đoán {datetime.now().strftime('%d/%m/%Y')}",
+            body=f"""
+🔮 MegaPowerReal Report
+
+🎲 Mega 6/45 dự đoán: {pred_mega}
+💫 Power 6/55 dự đoán: {pred_power}
+
+🎯 Kết quả thật:
+   Mega: {real_nums_mega}
+   Power: {real_nums_power}
+
+📊 Độ chính xác:
+   Mega: {acc_mega:.2%}
+   Power: {acc_power:.2%}
+
+🕓 Generated at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+            """,
+            attachment_path=report_path
+        )
+        log("📨 Email sent successfully.")
+    except Exception as e:
+        log(f"⚠️ Email sending failed: {e}")
+
+    log("✅ Pipeline completed successfully.")
 
 
-# ================================
-# ENTRY POINT
-# ================================
 if __name__ == "__main__":
     run_pipeline()
