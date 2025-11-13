@@ -167,3 +167,23 @@ def run_pipeline():
 
 if __name__ == "__main__":
     run_pipeline()
+    # Gửi email sau khi hoàn tất
+    report_file = os.path.join(SAVE_DIR, "mega_power_latest_report.xlsx")
+    if os.path.exists(report_file):
+        subject = "📊 MegaPowerReal - Báo cáo mới nhất"
+        body = (
+            "Xin chào,\n\n"
+            "Hệ thống MegaPowerReal đã hoàn tất dự đoán kỳ mới.\n"
+            "File đính kèm chứa thống kê, kết quả dự đoán và nhật ký.\n\n"
+            "Thân mến,\nMegaPowerReal Bot 🤖"
+        )
+        send_email_with_report(
+            sender=os.getenv("EMAIL_SENDER"),
+            password=os.getenv("EMAIL_PASSWORD"),
+            recipient=os.getenv("EMAIL_RECEIVER"),
+            subject=subject,
+            body=body,
+            attach_path=report_file
+        )
+    else:
+        print("⚠️ Không tìm thấy file báo cáo để gửi email.")
