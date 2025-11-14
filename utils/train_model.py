@@ -88,3 +88,62 @@ def ensemble_predict_topk(mega_df, power_df, rf_path=None, gb_path=None, topk=6)
     idxs_p = _np.array(p_counts).argsort()[-topk:][::-1]
     pred_power = sorted([int(i+1) for i in idxs_p])
     return pred_nums, pred_power
+
+def ensemble_predict_topk(mega_df, power_df, rf_path, gb_path, topk=6):
+    import numpy as _np
+
+    # -----------------------------------------------
+    # 1) Nếu mega_df không đủ dữ liệu → trả về []
+    # -----------------------------------------------
+    if mega_df is None or len(mega_df) < 10:
+        return [], []
+
+    # Mega feature window
+    window = min(50, len(mega_df))
+    mw = mega_df.tail(window)
+
+    # Build Mega features
+    m_counts = [
+        sum(mw[f"n{i}"].isin([n]).sum() for i in range(1, 7))
+        for n in range(1, 46)
+    ]
+    Xcur = _np.array([
+        [m_counts[n-1], m_counts[n-1]/(window*6)]
+        for n in range(1, 46)
+    ])
+
+    # Load models safely
+    rf = joblib.load(rf_path) if rf_path and os.path.exists(rf_path) else None
+    gb = joblib.load(gb_path) if gb_path and os.path.exists(gb_path) else None
+
+    probs_rf = rf.predict_proba(Xcur)[:, 1] if rf else _np.zeros(45)
+    probs_gb = gb.predict_proba(Xcur)[:, 1] if gb else _np.zeros(45)
+
+    probs = (probs_rf + probs_gb) / 2
+    idxs = probs.argsort()[-topk:][::-1]
+    pred_mega = sorted([int(i + 1) for i in idxs])
+
+    # -------------------------------------------------------------
+    # 2) FIX QUAN TRỌNG: Nếu power_df rỗng → không dự đoán Power
+    # -------------------------------------------------------------
+    if power_df is None or len(power_df) == 0:
+        return pred_mega, []   # 👈 không crash nữa
+
+    # Nếu power_df có dữ liệu → tiếp tục tính
+    window_p = min(50, len(power_df))
+    pw = power_df.tail(window_p)
+
+    # Bảo vệ nếu thiếu cột n1–n6
+    required_cols = {f"n{i}" for i in range(1, 7)}
+    if not required_cols.issubset(set(pw.columns)):
+        return pred_mega, []   # 👈 tránh lỗi KeyError
+
+    p_counts = [
+        sum(pw[f"n{i}"].isin([n]).sum() for i in range(1, 7))
+        for n in range(1, 56)
+    ]
+
+    idxs_p = _np.argsort(p_counts)[-topk:][::-1]
+    pred_power = sorted([int(i + 1) for i in idxs_p])
+
+    return pred_mega, pred_power
