@@ -1,49 +1,38 @@
-"""
-email_utils.py — Send email via Gmail SMTP
-"""
-
+# utils/email_utils.py
 import os
+from utils.logger import log
 import smtplib
-from email.mime.base import MIMEBase
-from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.mime.base import MIMEBase
 from email import encoders
-from config import CFG
 
-def load_email_config_from_env():
-    """Override config using GitHub Secrets."""
-    CFG["email_sender"]   = os.getenv("EMAIL_SENDER", "").strip()
-    CFG["email_receiver"] = os.getenv("EMAIL_RECEIVER", "").strip()
-    CFG["email_password"] = os.getenv("EMAIL_PASSWORD", "").strip()
-
-def send_email_with_attachment(body_text, attachment_path=None):
-    """Send email with optional XLSX attachment."""
-    
-    load_email_config_from_env()
-
-    sender = CFG["email_sender"]
-    receiver = CFG["email_receiver"]
-    password = CFG["email_password"]
-
+def send_email_with_attachment(subject, body, attachment_path=None):
+    sender = os.getenv("EMAIL_SENDER") or os.getenv("GMAIL_USER")
+    password = os.getenv("EMAIL_PASSWORD") or os.getenv("GMAIL_APP_PASSWORD")
+    receiver = os.getenv("EMAIL_RECEIVER") or os.getenv("RECEIVER_EMAIL")
+    if not sender or not password or not receiver:
+        log("⚠️ Email sending failed: Missing EMAIL_SENDER / EMAIL_PASSWORD / EMAIL_RECEIVER env.")
+        return False
     msg = MIMEMultipart()
     msg["From"] = sender
     msg["To"] = receiver
-    msg["Subject"] = CFG["email_subject"]
-
-    msg.attach(MIMEText(body_text, "plain"))
-
-    # Optional file
+    msg["Subject"] = subject
+    msg.attach(MIMEText(body, "plain"))
     if attachment_path and os.path.exists(attachment_path):
-        with open(attachment_path, "rb") as f:
-            part = MIMEBase("application", "octet-stream")
+        with open(attachment_path,"rb") as f:
+            part = MIMEBase("application","octet-stream")
             part.set_payload(f.read())
-            encoders.encode_base64(part)
-            part.add_header("Content-Disposition", f"attachment; filename={os.path.basename(attachment_path)}")
-            msg.attach(part)
-
-    # Send via Gmail SMTP
-    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
-        smtp.login(sender, password)
-        smtp.send_message(msg)
-
-    print(f"📧 Email sent to {receiver} (attachment={bool(attachment_path)})")
+        encoders.encode_base64(part)
+        part.add_header("Content-Disposition", f"attachment; filename={os.path.basename(attachment_path)}")
+        msg.attach(part)
+    try:
+        # Use SSL port 465 to be robust in GH Actions
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.login(sender, password)
+            server.send_message(msg)
+        log(f"📧 Email sent to {receiver} (attachment={bool(attachment_path)})")
+        return True
+    except Exception as e:
+        log(f"❌ Email sending failed: {e}")
+        return False
