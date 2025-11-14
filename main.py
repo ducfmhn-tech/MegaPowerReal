@@ -111,7 +111,12 @@ def run_pipeline():
 
     # 5️⃣ Generate Excel report
     now_tag = datetime.now().strftime("%Y%m%d_%H%M%S")
-    report_path = os.path.join(SAVE_DIR, f"mega_power_report_{now_tag}.xlsx")
+    report_path = get_latest_report()
+
+    if report_path and os.path.exists(report_path):
+        send_email_with_report(report_path, CFG["email_sender"]["email_receiver"])
+    else:
+        log("⚠️ Không tìm thấy file báo cáo để gửi email.")
 
     with pd.ExcelWriter(report_path, engine="openpyxl") as writer:
         mega_df.to_excel(writer, index=False, sheet_name="Mega_6_45")
