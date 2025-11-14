@@ -1,7 +1,7 @@
 import os, pandas as pd
 from datetime import datetime
 import os
-from utils.logger import log
+from .logger import log
 
 def get_latest_report(folder="data"):
     """
