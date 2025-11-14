@@ -7,7 +7,8 @@ Description:
   - Train + Predict + Evaluate + Auto Retrain
   - Generate Excel report + Send Email automatically (GitHub Actions)
 """
-
+import os, sys
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 import os, json, pandas as pd
 from datetime import datetime
 from utils.fetch_data import fetch_all_data
