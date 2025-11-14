@@ -12,7 +12,7 @@ from config import CFG
 
 def load_email_config_from_env():
     """Override config using GitHub Secrets."""
-    CFG["email_sender"]   = os.getenv("EMAIL_SENDER", "").strip())
+    CFG["email_sender"]   = os.getenv("EMAIL_SENDER", "").strip()
     CFG["email_receiver"] = os.getenv("EMAIL_RECEIVER", "").strip()
     CFG["email_password"] = os.getenv("EMAIL_PASSWORD", "").strip()
 
