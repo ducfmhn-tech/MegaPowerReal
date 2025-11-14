@@ -1,16 +1,15 @@
 # MegaPowerReal
 
-Pipeline tự động lấy kết quả Mega 6/45 & Power 6/55, huấn luyện mô hình và gợi ý dãy số cho kỳ tiếp theo.
+Auto pipeline to fetch Vietlott Mega 6/45 & Power 6/55, train simple models, predict, create report and send email via GitHub Actions.
 
 ## Setup
-1. Tạo repository trên GitHub và push toàn bộ file.
-2. Thêm GitHub Secrets:
-   - `GMAIL_USER` (gmail gửi)
-   - `GMAIL_PASS` (App Password 16 ký tự)
-   - `GMAIL_RECEIVER` (nếu khác)
-3. Kiểm tra `config.json` (n_periods, window, threshold_retrain_pct).
-4. Actions sẽ chạy hàng ngày 10:00 VN (03:00 UTC).
 
-## Lưu ý
-- Xổ số là ngẫu nhiên — mô hình chỉ gợi ý dựa trên tần suất lịch sử.
-- Kiểm tra logs tại `data/daily_log.txt` và artifacts trong Actions.
+1. Add GitHub Secrets:
+   - EMAIL_SENDER (gmail)
+   - EMAIL_PASSWORD (app password - 16 chars)
+   - EMAIL_RECEIVER
+   - EMAIL_SUBJECT (optional)
+
+2. Push files and run workflow manually (Actions → Run workflow).
+
+## Run locally
