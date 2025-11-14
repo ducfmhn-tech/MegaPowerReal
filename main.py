@@ -13,7 +13,7 @@ import os, json, pandas as pd
 from datetime import datetime
 from utils.fetch_data import fetch_all_data
 from utils.train_model import train_models_and_save, ensemble_predict_topk
-from MegaPowerReal.config import CFG
+from config import CFG
 from utils.email_utils import send_email_with_attachment
 
 
