@@ -1,9 +1,9 @@
 """
-fetch_data.py
-- Fetch Vietlott Mega 6/45 & Power 6/55
-- Parse HTML table into clean DataFrame
-- Sort n1–n6 (required)
-- Provide fetch_all_data() for main.py
+fetch_data.py — FIXED VERSION
+- Mega 6/45 parser (merged numbers / multi-format)
+- Power 6/55 parser (special table format)
+- Sorting n1–n6
+- fetch_all_data()
 """
 
 import os
@@ -11,27 +11,45 @@ import re
 import time
 import requests
 import pandas as pd
+from bs4 import BeautifulSoup
 from io import StringIO
 from datetime import datetime
 from utils.logger import log
 
 N_PERIODS = 120
 
-MEGA_URLS = [
-    "https://www.ketquadientoan.com/tat-ca-ky-xo-so-mega-6-45.html"
-]
+MEGA_URL = "https://www.ketquadientoan.com/tat-ca-ky-xo-so-mega-6-45.html"
+POWER_URL = "https://www.ketquadientoan.com/tat-ca-ky-xo-so-power-655.html"
 
-POWER_URLS = [
-    "https://www.ketquadientoan.com/tat-ca-ky-xo-so-power-6-55.html"
-]
+HEADERS = {"User-Agent": "Mozilla/5.0"}
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0"
-}
 
-# -------------------------------------------------------------------
-# 1) FETCH HTML
-# -------------------------------------------------------------------
+# ------------------------------------------------------
+# Helper: normalize date
+# ------------------------------------------------------
+def normalize_date(text):
+    if not isinstance(text, str):
+        return None
+    text = text.strip()
+
+    # remove weekday if exists (e.g. "Thứ 4, 22/09/2024")
+    text = re.sub(r"^\D{1,10},\s*", "", text)
+
+    for fmt in ("%d/%m/%Y", "%Y-%m-%d", "%d-%m-%Y"):
+        try:
+            return datetime.strptime(text, fmt).strftime("%Y-%m-%d")
+        except:
+            pass
+
+    try:
+        return pd.to_datetime(text, dayfirst=True).strftime("%Y-%m-%d")
+    except:
+        return None
+
+
+# ------------------------------------------------------
+# 1) RAW HTML fetch with retry
+# ------------------------------------------------------
 def fetch_html(url, retry=3):
     for i in range(retry):
         try:
@@ -45,162 +63,128 @@ def fetch_html(url, retry=3):
     return None
 
 
-# -------------------------------------------------------------------
-# 2) Parse helper functions
-# -------------------------------------------------------------------
-def parse_numbers_from_string(text: str):
-    if not isinstance(text, str):
-        return []
-    cleaned = re.sub(r"[^\d ,]", "", text)
-    return [int(x) for x in re.findall(r"\d+", cleaned)]
-
-
-# -------------------------------------------------------------------
-# 3) Parse HTML → DataFrame
-# -------------------------------------------------------------------
-def parse_html_to_df(html_text, url, limit=100):
+# ------------------------------------------------------
+# 2) Parse MEGA 6/45 — robust multi-format
+# ------------------------------------------------------
+def parse_mega(html, limit=100):
     try:
-        dfs = pd.read_html(StringIO(html_text))
-    except Exception:
+        dfs = pd.read_html(StringIO(html))
+    except:
         return pd.DataFrame()
 
-    final_df = pd.DataFrame()
+    final = pd.DataFrame()
 
     for df in dfs:
         df.columns = [str(c).strip().lower() for c in df.columns]
+        cols = df.columns.tolist()
 
         # find date column
-        date_col = next(
-            (c for c in df.columns
-             if df[c].astype(str).str.contains(r"\d{1,2}/\d{1,2}/\d{2,4}", na=False).any()),
-            None
-        )
+        date_col = None
+        for c in cols:
+            if df[c].astype(str).str.contains(r"\d{1,2}/\d{1,2}/\d{4}", na=False).any():
+                date_col = c
+                break
         if not date_col:
             continue
 
-        # find merged numbers column
-        num_col = next(
-            (c for c in df.columns
-             if df[c].astype(str).str.contains(r"(\d+[, ]+){5}\d+", na=False).any()),
-            None
-        )
+        # find merged numbers (Mega format)
+        num_col = None
+        for c in cols:
+            if df[c].astype(str).str.contains(r"(\d+[, ]+){5}\d+", na=False).any():
+                num_col = c
+                break
 
-        if num_col:
-            # Extract merged numbers
-            nums = df[num_col].astype(str).apply(parse_numbers_from_string)
-            nums = nums[nums.apply(lambda x: len(x) >= 6)]
-            if nums.empty:
-                continue
-
-            nums_df = pd.DataFrame([x[:6] for x in nums.tolist()],
-                                   index=nums.index,
-                                   columns=[f"n{i}" for i in range(1, 7)])
-
-            out = pd.concat(
-                [df.loc[nums.index, date_col].rename("draw_date"), nums_df],
-                axis=1
-            )
-        else:
-            # Fallback: detect columns with numeric content
-            numeric_cols = [c for c in df.columns if
-                            pd.to_numeric(df[c], errors="coerce").notna().mean() > 0.7]
-
-            if len(numeric_cols) < 6:
-                continue
-
-            numeric_cols = numeric_cols[:6]
-            out = df[[date_col] + numeric_cols].copy()
-            out.rename(columns={date_col: "draw_date"}, inplace=True)
-            for i, c in enumerate(numeric_cols):
-                out.rename(columns={c: f"n{i+1}"}, inplace=True)
-
-        # normalize date
-        out["draw_date"] = (
-            out["draw_date"]
-            .astype(str)
-            .str.replace(r"^\w{1,2},\s*", "", regex=True)
-        )
-        extracted = out["draw_date"].str.extract(r"(\d{1,2}/\d{1,2}/\d{2,4})")
-        out["draw_date"] = extracted[0].fillna(out["draw_date"])
-        out["draw_date"] = pd.to_datetime(out["draw_date"],
-                                          format="%d/%m/%Y",
-                                          errors="coerce")
-        out.dropna(subset=["draw_date"], inplace=True)
-
-        # numeric clean
-        for i in range(1, 7):
-            out[f"n{i}"] = pd.to_numeric(out[f"n{i}"], errors="coerce")
-        out.dropna(subset=[f"n{i}" for i in range(1, 7)], inplace=True)
-
-        # SORT numbers
-        for idx in out.index:
-            nums = sorted([int(out.loc[idx, f"n{i}"]) for i in range(1, 7)])
-            for i in range(6):
-                out.loc[idx, f"n{i+1}"] = nums[i]
-
-        final_df = pd.concat([final_df, out], ignore_index=True)
-
-    if final_df.empty:
-        return pd.DataFrame()
-
-    final_df.drop_duplicates(
-        subset=["draw_date"] + [f"n{i}" for i in range(1, 7)],
-        inplace=True
-    )
-    final_df.sort_values(by="draw_date", ascending=False, inplace=True)
-
-    return final_df.head(limit).copy()
-
-
-# -------------------------------------------------------------------
-# 4) MULTI-SOURCE fetch
-# -------------------------------------------------------------------
-def fetch_multiple(urls, limit=100):
-    merged = pd.DataFrame()
-    for url in urls:
-        html = fetch_html(url)
-        if not html:
+        if not num_col:
             continue
-        df = parse_html_to_df(html, url, limit)
-        if not df.empty:
-            df["source"] = url
-            merged = pd.concat([merged, df], ignore_index=True)
 
-    if merged.empty:
+        # extract numbers
+        nums = df[num_col].astype(str).apply(lambda x: re.findall(r"\d+", x))
+        nums = nums[nums.apply(lambda x: len(x) >= 6)]
+        nums = nums.apply(lambda x: list(map(int, x[:6])))
+
+        temp = pd.DataFrame(nums.tolist(), columns=[f"n{i}" for i in range(1, 7)])
+        temp.insert(0, "date", df.loc[nums.index, date_col].astype(str))
+
+        final = pd.concat([final, temp], ignore_index=True)
+
+    if final.empty:
+        return final
+
+    # normalize + sort
+    final["date"] = final["date"].apply(normalize_date)
+    final.dropna(subset=["date"], inplace=True)
+
+    for idx in final.index:
+        arr = sorted([int(final.loc[idx, f"n{i}"]) for i in range(1, 7)])
+        for i in range(6):
+            final.loc[idx, f"n{i+1}"] = arr[i]
+
+    final.drop_duplicates(inplace=True)
+    final.sort_values("date", ascending=False, inplace=True)
+
+    return final.head(limit).reset_index(drop=True)
+
+
+# ------------------------------------------------------
+# 3) Parse POWER 6/55 — special table format
+# ------------------------------------------------------
+def parse_power(html, limit=100):
+    soup = BeautifulSoup(html, "lxml")
+    table = soup.find("table")
+
+    if table is None:
         return pd.DataFrame()
 
-    merged.drop_duplicates(
-        subset=["draw_date"] + [f"n{i}" for i in range(1, 7)],
-        inplace=True
-    )
-    merged.sort_values(by="draw_date", ascending=False, inplace=True)
+    rows = table.find_all("tr")
+    if len(rows) < 2:
+        return pd.DataFrame()
 
-    return merged.head(limit).copy()
+    extracted = []
+
+    for tr in rows:
+        cols = [c.get_text(strip=True) for c in tr.find_all("td")]
+        if len(cols) < 7:
+            continue
+
+        # first col must contain date
+        date = normalize_date(cols[0])
+        if not date:
+            continue
+
+        nums = re.findall(r"\d+", " ".join(cols[1:7]))
+        if len(nums) < 6:
+            continue
+
+        nums = sorted(list(map(int, nums[:6])))
+
+        extracted.append({
+            "date": date,
+            "n1": nums[0], "n2": nums[1], "n3": nums[2],
+            "n4": nums[3], "n5": nums[4], "n6": nums[5],
+        })
+
+    df = pd.DataFrame(extracted)
+    df.drop_duplicates(inplace=True)
+    df.sort_values("date", ascending=False, inplace=True)
+
+    return df.head(limit).reset_index(drop=True)
 
 
-# -------------------------------------------------------------------
-# 5) PUBLIC FUNCTIONS
-# -------------------------------------------------------------------
-def fetch_mega():
-    log("🔹 Fetching Mega 6/45...")
-    return fetch_multiple(MEGA_URLS, limit=N_PERIODS)
-
-
-def fetch_power():
-    log("🔹 Fetching Power 6/55...")
-    return fetch_multiple(POWER_URLS, limit=N_PERIODS)
-
-
-# -------------------------------------------------------------------
-# 6) MAIN FUNCTION for main.py (required)
-# -------------------------------------------------------------------
+# ------------------------------------------------------
+# 4) PUBLIC: fetch_all_data()
+# ------------------------------------------------------
 def fetch_all_data(limit=100, save_dir="data"):
     os.makedirs(save_dir, exist_ok=True)
 
-    mega_df = fetch_mega()
-    power_df = fetch_power()
+    log("🔹 Fetching Mega 6/45...")
+    mega_html = fetch_html(MEGA_URL)
+    mega_df = parse_mega(mega_html, limit) if mega_html else pd.DataFrame()
 
-    # save CSV
+    log("🔹 Fetching Power 6/55...")
+    power_html = fetch_html(POWER_URL)
+    power_df = parse_power(power_html, limit) if power_html else pd.DataFrame()
+
+    # save
     mega_df.to_csv(os.path.join(save_dir, "mega_6_45_raw.csv"), index=False)
     power_df.to_csv(os.path.join(save_dir, "power_6_55_raw.csv"), index=False)
 
@@ -209,4 +193,4 @@ def fetch_all_data(limit=100, save_dir="data"):
     return mega_df, power_df
 
 
-__all__ = ["fetch_all_data", "fetch_mega", "fetch_power"]
+__all__ = ["fetch_all_data", "parse_mega", "parse_power"]
