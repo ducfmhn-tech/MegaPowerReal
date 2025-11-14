@@ -8,7 +8,9 @@ Description:
   - Generate Excel report + Send Email automatically (GitHub Actions)
 """
 import os, sys
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+ROOT = os.path.dirname(os.path.abspath(__file__))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
 import os, json, pandas as pd
 from datetime import datetime
 from utils.fetch_data import fetch_all_data
@@ -16,6 +18,7 @@ from utils.train_model import train_models_and_save, ensemble_predict_topk
 from config import CFG
 from utils.email_utils import send_email_with_attachment
 from utils.report import generate_report, get_latest_report
+from utils.logger import log
 
 # === CONFIG ===
 SAVE_DIR = "data"
@@ -134,6 +137,11 @@ def run_pipeline():
     log(f"📁 Report saved to: {report_path}")
 
     # 6️⃣ Send email
+    report = generate_report(mega_df,power_df,pred_mega,pred_power, save_dir="data")
+    subj = os.getenv("EMAIL_SUBJECT","Mega-Power (real) — Report")
+    body = f"Mega: {pred_mega}\nPower: {pred_power}"
+    send_email_with_attachment(subj, body, report)
+    
     try:
         send_email_with_attachment(
             sender=CFG["gmail_user"],
