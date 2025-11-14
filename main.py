@@ -1,197 +1,67 @@
-"""
-MegaPowerReal - Main Pipeline
-Author: ChatGPT
-Version: 2025-11
-Description:
-  - Fetch Mega 6/45 & Power 6/55 data from ketquadientoan.com
-  - Train + Predict + Evaluate + Auto Retrain
-  - Generate Excel report + Send Email automatically (GitHub Actions)
-"""
-import os, sys
+# main.py
+import os, sys, json
 ROOT = os.path.dirname(os.path.abspath(__file__))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
-import os, json, pandas as pd
-from datetime import datetime
+
+from utils.logger import log
 from utils.fetch_data import fetch_all_data
 from utils.train_model import train_models_and_save, ensemble_predict_topk
-from config import CFG
-from utils.email_utils import send_email_with_attachment
 from utils.report import generate_report, get_latest_report
-from utils.logger import log
+from utils.email_utils import send_email_with_attachment
+from config import CFG
 
-# === CONFIG ===
-SAVE_DIR = "data"
-MODELS_DIR = "models"
-LOG_FILE = os.path.join(SAVE_DIR, "daily_log.txt")
-LAST_PRED_PATH = os.path.join(SAVE_DIR, "last_prediction.json")
-os.makedirs(SAVE_DIR, exist_ok=True)
-os.makedirs(MODELS_DIR, exist_ok=True)
-
-
-# === UTILS ===
-def log(msg: str):
-    t = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    line = f"[{t}] {msg}"
-    print(line)
-    with open(LOG_FILE, "a", encoding="utf-8") as f:
-        f.write(line + "\n")
-
-def load_last_prediction():
-    if not os.path.exists(LAST_PRED_PATH):
-        return {}
-    try:
-        with open(LAST_PRED_PATH, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except:
-        return {}
-
-def save_last_prediction(pred_mega, pred_power):
-    data = {
-        "timestamp": datetime.now().isoformat(),
-        "mega_pred": pred_mega,
-        "power_pred": pred_power,
-    }
-    with open(LAST_PRED_PATH, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-    log(f"Saved last_prediction.json: {data}")
-
-# === MAIN PIPELINE ===
 def run_pipeline():
     log("🚀 Starting MegaPowerReal Pipeline...")
-
-    # 1️⃣ Fetch data
-    log("🔹 Fetching Mega 6/45...")
-    mega_df, power_df = fetch_all_data(limit=CFG["n_periods"], save_dir=SAVE_DIR)
+    mega_df, power_df = fetch_all_data(limit=CFG["n_periods"], save_dir=CFG["data_dir"])
     log(f"✅ Mega rows: {len(mega_df)}, Power rows: {len(power_df)}")
 
-    if len(mega_df) < 50 or len(power_df) < 50:
+    rf_path, gb_path, metrics = train_models_and_save(mega_df, power_df, window=CFG["window"], models_dir=CFG["models_dir"])
+    if rf_path is None and not metrics:
         log("❌ Not enough data to train.")
-        return
+    else:
+        log(f"✅ Training completed | RF acc={metrics.get('acc_rf',0):.3f}")
 
-    # 2️⃣ Train models
-    log("🧠 Training models...")
-    rf_path, gb_path, metrics = train_models_and_save(
-        mega_df, power_df, window=CFG["window"], save_dir=SAVE_DIR, models_dir=MODELS_DIR
-    )
-    log(f"✅ Training completed | RF acc={metrics.get('acc_rf'):.3f} | GB acc={metrics.get('acc_gb'):.3f}")
-
-    # 3️⃣ Predict next draw
     log("🎯 Predicting next numbers...")
-    pred_mega, pred_power, probs = ensemble_predict_topk(
-        mega_df, power_df, rf_path, gb_path, topk=6, save_dir=SAVE_DIR
-    )
-    save_last_prediction(pred_mega, pred_power)
-
+    pred_mega, pred_power = ensemble_predict_topk(mega_df, power_df, rf_path, gb_path, topk=6)
     log(f"🎲 Mega 6/45 predicted: {pred_mega}")
     log(f"💫 Power 6/55 predicted: {pred_power}")
 
-    # 4️⃣ Compare with last real draw (if exists)
-    real_mega_path = os.path.join(SAVE_DIR, "mega_6_45_raw.csv")
-    real_power_path = os.path.join(SAVE_DIR, "power_6_55_raw.csv")
-    real_nums_mega, real_nums_power = [], []
+    # save last prediction
+    last = {
+        "timestamp": __import__("datetime").datetime.now().isoformat(),
+        "mega_pred": pred_mega,
+        "power_pred": pred_power,
+        "metrics": metrics
+    }
+    os.makedirs(CFG["data_dir"], exist_ok=True)
+    last_json = os.path.join(CFG["data_dir"], "last_prediction.json")
+    with open(last_json, "w") as f:
+        json.dump(last, f)
+    log(f"Saved last_prediction.json: {last}")
 
-    try:
-        if os.path.exists(real_mega_path):
-            dfm = pd.read_csv(real_mega_path)
-            last = dfm.iloc[-1]
-            real_nums_mega = sorted([int(last[f"n{i}"]) for i in range(1,7)])
-        if os.path.exists(real_power_path):
-            dfp = pd.read_csv(real_power_path)
-            lastp = dfp.iloc[-1]
-            real_nums_power = sorted([int(lastp[f"n{i}"]) for i in range(1,7)])
-    except Exception as e:
-        log(f"⚠️ Error reading real numbers: {e}")
-
-    def accuracy(pred, real):
-        if not real:
-            return 0.0
-        return len(set(pred) & set(real)) / 6
-
-    acc_mega = accuracy(pred_mega, real_nums_mega)
-    acc_power = accuracy(pred_power, real_nums_power)
-    log(f"📊 Accuracy: Mega={acc_mega:.2%} | Power={acc_power:.2%}")
-
-    # 5️⃣ Generate Excel report
-    now_tag = datetime.now().strftime("%Y%m%d_%H%M%S")
-    report_path = get_latest_report()
-
+    # generate report (if possible)
+    report_path = generate_report(mega_df, power_df, pred_mega, pred_power, save_dir=CFG["reports_dir"])
     if report_path and os.path.exists(report_path):
-        send_email_with_report(report_path, CFG["email_sender"]["email_receiver"])
+        body = f"Mega predicted: {pred_mega}\nPower predicted: {pred_power}\nMetrics: {metrics}"
+        subj = os.getenv("EMAIL_SUBJECT", CFG.get("email_subject"))
+        ok = send_email_with_attachment(subj, body, report_path)
+        if ok:
+            log("📧 Email sent successfully.")
+        else:
+            log("⚠️ Email sending failed.")
     else:
-        log("⚠️ Không tìm thấy file báo cáo để gửi email.")
-
-    with pd.ExcelWriter(report_path, engine="openpyxl") as writer:
-        mega_df.to_excel(writer, index=False, sheet_name="Mega_6_45")
-        power_df.to_excel(writer, index=False, sheet_name="Power_6_55")
-        pd.DataFrame({
-            "Mega_Pred": [pred_mega],
-            "Power_Pred": [pred_power],
-            "Real_Mega": [real_nums_mega],
-            "Real_Power": [real_nums_power],
-            "Acc_Mega": [acc_mega],
-            "Acc_Power": [acc_power],
-            "Timestamp": [datetime.now().isoformat()]
-        }).to_excel(writer, index=False, sheet_name="Prediction_Report")
-
-    log(f"📁 Report saved to: {report_path}")
-
-    # 6️⃣ Send email
-    report = generate_report(mega_df,power_df,pred_mega,pred_power, save_dir="data")
-    subj = os.getenv("EMAIL_SUBJECT","Mega-Power (real) — Report")
-    body = f"Mega: {pred_mega}\nPower: {pred_power}"
-    send_email_with_attachment(subj, body, report)
-    
-    try:
-        send_email_with_attachment(
-            sender=CFG["gmail_user"],
-            password=CFG["gmail_pass"],
-            recipient=CFG["receiver_email"],
-            subject=f"[MegaPowerReal] Báo cáo dự đoán {datetime.now().strftime('%d/%m/%Y')}",
-            body=f"""
-🔮 MegaPowerReal Report
-
-🎲 Mega 6/45 dự đoán: {pred_mega}
-💫 Power 6/55 dự đoán: {pred_power}
-
-🎯 Kết quả thật:
-   Mega: {real_nums_mega}
-   Power: {real_nums_power}
-
-📊 Độ chính xác:
-   Mega: {acc_mega:.2%}
-   Power: {acc_power:.2%}
-
-🕓 Generated at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-            """,
-            attachment_path=report_path
-        )
-        log("📨 Email sent successfully.")
-    except Exception as e:
-        log(f"⚠️ Email sending failed: {e}")
+        # fallback: still send predictions (no attachment)
+        log("⚠️ No report available — will send prediction email without attachment.")
+        body = f"Mega predicted: {pred_mega}\nPower predicted: {pred_power}\nMetrics: {metrics}"
+        subj = os.getenv("EMAIL_SUBJECT", CFG.get("email_subject"))
+        ok = send_email_with_attachment(subj, body, attachment_path=None)
+        if ok:
+            log("📧 Fallback email (no attachment) sent successfully.")
+        else:
+            log("❌ Fallback email sending failed.")
 
     log("✅ Pipeline completed successfully.")
 
-
 if __name__ == "__main__":
     run_pipeline()
-    # Gửi email sau khi hoàn tất
-    report_file = os.path.join(SAVE_DIR, "mega_power_latest_report.xlsx")
-    if os.path.exists(report_file):
-        subject = "📊 MegaPowerReal - Báo cáo mới nhất"
-        body = (
-            "Xin chào,\n\n"
-            "Hệ thống MegaPowerReal đã hoàn tất dự đoán kỳ mới.\n"
-            "File đính kèm chứa thống kê, kết quả dự đoán và nhật ký.\n\n"
-            "Thân mến,\nMegaPowerReal Bot 🤖"
-        )
-        send_email_with_attachment(
-            sender=os.getenv("EMAIL_SENDER"),
-            password=os.getenv("EMAIL_PASSWORD"),
-            recipient=os.getenv("EMAIL_RECEIVER"),
-            subject=subject,
-            body=body,
-            attach_path=report_file
-        )
-    else:
-        print("⚠️ Không tìm thấy file báo cáo để gửi email.")
