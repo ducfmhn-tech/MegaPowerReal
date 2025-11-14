@@ -12,7 +12,8 @@ import os, json, pandas as pd
 from datetime import datetime
 from utils.fetch_data import fetch_all_data
 from utils.train_model import train_models_and_save, ensemble_predict_topk
-from utils.email_utils import send_email_with_report
+from config import CFG
+from utils.email_utils import send_email
 
 
 # === CONFIG ===
@@ -23,13 +24,6 @@ LAST_PRED_PATH = os.path.join(SAVE_DIR, "last_prediction.json")
 os.makedirs(SAVE_DIR, exist_ok=True)
 os.makedirs(MODELS_DIR, exist_ok=True)
 
-CFG = {
-    "n_periods": 100,
-    "window": 50,
-    "gmail_user": os.getenv("GMAIL_USER"),
-    "gmail_pass": os.getenv("GMAIL_PASS"),
-    "receiver_email": os.getenv("RECEIVER_EMAIL"),
-}
 
 # === UTILS ===
 def log(msg: str):
