@@ -21,7 +21,14 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-
+      - name: Run repo scan
+        run: python tools/repo_scan.py
+      - name: Upload scan log
+        uses: actions/upload-artifact@v4
+        with:
+          name: repo-scan
+          path: tools/repo_scan.py
+          
       - name: Run MegaPowerReal
         env:
           EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
