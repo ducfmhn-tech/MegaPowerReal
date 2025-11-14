@@ -12,9 +12,9 @@ from config import CFG
 
 def load_email_config_from_env():
     """Override config using GitHub Secrets."""
-    CFG["email_sender"]   = os.getenv("EMAIL_SENDER")
-    CFG["email_receiver"] = os.getenv("EMAIL_RECEIVER")
-    CFG["email_password"] = os.getenv("EMAIL_PASSWORD")
+    CFG["email_sender"]   = os.getenv("EMAIL_SENDER", "").strip())
+    CFG["email_receiver"] = os.getenv("EMAIL_RECEIVER", "").strip()
+    CFG["email_password"] = os.getenv("EMAIL_PASSWORD", "").strip()
 
 def send_email_with_attachment(body_text, attachment_path=None):
     """Send email with optional XLSX attachment."""
