@@ -19,10 +19,15 @@ def generate_report(mega_df, power_df, pred_mega, pred_power, save_dir="data"):
     return report_path
 
 def get_latest_report(folder="data"):
-    if not os.path.exists(folder): return None
-    files = [f for f in os.listdir(folder) if f.startswith("mega_power_report_") and f.endswith(".xlsx")]
-    if not files: return None
-    files = sorted(files, key=lambda f: os.path.getmtime(os.path.join(folder,f)), reverse=True)
-    latest = os.path.join(folder, files[0])
-    log(f"📁 Latest report found: {latest}")
+    import glob
+    from utils.logger import log
+
+    files = glob.glob(os.path.join(folder, "mega_power_report_*.xlsx"))
+    if not files:
+        log("⚠️ No report files found in data/")
+        return None
+
+    # newest file
+    latest = max(files, key=os.path.getctime)
+    log(f"📄 Latest report detected: {latest}")
     return latest
