@@ -1,14 +1,29 @@
 import os, pandas as pd
 from datetime import datetime
+import os
+from utils.logger import log
 
-def get_latest_report():
-    files = sorted(
-        [f for f in os.listdir("data") if f.startswith("mega_power_report_") and f.endswith(".xlsx")],
-        reverse=True
-    )
-    if not files:
+def get_latest_report(folder="data"):
+    """
+    Tìm file báo cáo gần nhất theo thời gian trong thư mục data/.
+    Trả về đường dẫn file hoặc None nếu không có file nào.
+    """
+    if not os.path.exists(folder):
+        log("⚠️ Folder 'data' does not exist.")
         return None
-    return os.path.join("data", files[0])
+
+    files = [f for f in os.listdir(folder) if f.endswith(".xlsx")]
+
+    if not files:
+        log("⚠️ No report files found in data/")
+        return None
+
+    # sort theo thời gian tạo file
+    files = sorted(files, key=lambda f: os.path.getmtime(os.path.join(folder, f)), reverse=True)
+    latest = os.path.join(folder, files[0])
+
+    log(f"📁 Latest report found: {latest}")
+    return latest
     
 def save_report_xlsx(save_dir, reports_dir, mega_df, power_df, pred_mega, pred_power, metrics=None, retrain_info=None):
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
