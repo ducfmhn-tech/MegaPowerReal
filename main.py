@@ -15,7 +15,7 @@ from utils.fetch_data import fetch_all_data
 from utils.train_model import train_models_and_save, ensemble_predict_topk
 from config import CFG
 from utils.email_utils import send_email_with_attachment
-
+from utils.report import generate_report, get_latest_report
 
 # === CONFIG ===
 SAVE_DIR = "data"
