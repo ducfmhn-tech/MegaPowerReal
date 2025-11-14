@@ -1,6 +1,15 @@
 import os, pandas as pd
 from datetime import datetime
 
+def get_latest_report():
+    files = sorted(
+        [f for f in os.listdir("data") if f.startswith("mega_power_report_") and f.endswith(".xlsx")],
+        reverse=True
+    )
+    if not files:
+        return None
+    return os.path.join("data", files[0])
+    
 def save_report_xlsx(save_dir, reports_dir, mega_df, power_df, pred_mega, pred_power, metrics=None, retrain_info=None):
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     os.makedirs(reports_dir, exist_ok=True)
