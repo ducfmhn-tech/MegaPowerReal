@@ -130,7 +130,7 @@ def run_pipeline():
 
     # 6️⃣ Send email
     try:
-        send_email_with_report(
+        send_email_with_attachment(
             sender=CFG["gmail_user"],
             password=CFG["gmail_pass"],
             recipient=CFG["receiver_email"],
@@ -172,7 +172,7 @@ if __name__ == "__main__":
             "File đính kèm chứa thống kê, kết quả dự đoán và nhật ký.\n\n"
             "Thân mến,\nMegaPowerReal Bot 🤖"
         )
-        send_email_with_report(
+        send_email_with_attachment(
             sender=os.getenv("EMAIL_SENDER"),
             password=os.getenv("EMAIL_PASSWORD"),
             recipient=os.getenv("EMAIL_RECEIVER"),
