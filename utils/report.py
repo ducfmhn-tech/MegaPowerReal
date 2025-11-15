@@ -2,40 +2,14 @@
 import os, pandas as pd
 from datetime import datetime
 from utils.logger import log
-from config import CFG
-import glob
 
-def generate_report(mega_df, power_df, pred_mega, pred_power, save_dir=None):
-    if save_dir is None:
-        save_dir = CFG["reports_dir"]
+def generate_report(mega_df, power_df, pred_mega, pred_power, metrics, save_dir="data"):
     os.makedirs(save_dir, exist_ok=True)
-    now_tag = datetime.now().strftime("%Y%m%d_%H%M%S")
-    report_path = os.path.join(save_dir, f"mega_power_report_{now_tag}.xlsx")
-    try:
-        with pd.ExcelWriter(report_path, engine="openpyxl") as writer:
-            if mega_df is not None and not mega_df.empty:
-                mega_df.to_excel(writer, index=False, sheet_name="Mega_6_45")
-            if power_df is not None and not power_df.empty:
-                power_df.to_excel(writer, index=False, sheet_name="Power_6_55")
-            pd.DataFrame({
-                "mega_pred":[pred_mega],
-                "power_pred":[pred_power],
-                "timestamp":[datetime.now().isoformat()]
-            }).to_excel(writer, index=False, sheet_name="Prediction")
-        log(f"📁 Report saved to: {report_path}")
-        return report_path
-    except Exception as e:
-        log(f"⚠️ Error writing report: {e}")
-        return None
-
-def get_latest_report(folder=None):
-    if folder is None:
-        folder = CFG["reports_dir"]
-    pattern = os.path.join(folder, "mega_power_report_*.xlsx")
-    files = glob.glob(pattern)
-    if not files:
-        log("⚠️ No report files found in data/")
-        return None
-    latest = max(files, key=os.path.getctime)
-    log(f"📁 Latest report detected: {latest}")
-    return latest
+    fname = f"mega_power_report_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    path = os.path.join(save_dir, fname)
+    with pd.ExcelWriter(path, engine='openpyxl') as writer:
+        if mega_df is not None: mega_df.to_excel(writer, sheet_name='Mega_raw', index=False)
+        if power_df is not None: power_df.to_excel(writer, sheet_name='Power_raw', index=False)
+        pd.DataFrame([{"pred_mega": ", ".join(map(str,pred_mega)), "pred_power": ", ".join(map(str,pred_power)), "acc_rf": metrics.get("acc_rf"), "acc_gb": metrics.get("acc_gb"), "time": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")}]).to_excel(writer, sheet_name='Prediction', index=False)
+    log(f"📁 Report saved to: {path}")
+    return path
