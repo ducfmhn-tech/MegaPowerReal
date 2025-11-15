@@ -1,38 +1,20 @@
 name: MegaPower Pipeline
-
 on:
   schedule:
     - cron: '0 3 * * *'   # 03:00 UTC = 10:00 Vietnam
   workflow_dispatch:
-
 jobs:
   run:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
-
+      - uses: actions/checkout@v4
       - name: Setup Python
         uses: actions/setup-python@v4
-        with:
-          python-version: '3.10'
-
-      - name: Install dependencies
+        with: python-version: '3.10'
+      - name: Install deps
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-
-      - name: Run MegaPowerReal pipeline
-        run: |
-          python main.py
-
-      - name: Upload report artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: mega_power_data
-          path: data/
-       
       - name: Run pipeline
         env:
           EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
@@ -40,3 +22,8 @@ jobs:
           EMAIL_RECEIVER: ${{ secrets.EMAIL_RECEIVER }}
         run: |
           python main.py
+      - name: Upload report artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mega_power_data
+          path: data/
