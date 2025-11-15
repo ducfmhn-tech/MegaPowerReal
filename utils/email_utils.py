@@ -1,50 +1,31 @@
 # utils/email_utils.py
-import os, json
+import os, smtplib, ssl
+from email.message import EmailMessage
 from utils.logger import log
-from config import CFG
-import smtplib
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
-from email.mime.base import MIMEBase
-from email import encoders
 
-def _env_email_config():
-    sender = os.getenv("EMAIL_SENDER") or os.getenv("GMAIL_USER")
-    password = os.getenv("EMAIL_PASSWORD") or os.getenv("GMAIL_APP_PASSWORD")
-    receiver = os.getenv("EMAIL_RECEIVER") or os.getenv("RECEIVER_EMAIL")
-    subject = os.getenv("EMAIL_SUBJECT") or CFG.get("email_subject")
-    return sender, password, receiver, subject
-
-def send_email_with_attachment(subject, body, attachment_path=None):
-    sender, password, receiver, _ = _env_email_config()
-    if not sender or not password or not receiver:
-        log("⚠️ Email sending failed: Missing EMAIL_SENDER / EMAIL_PASSWORD / EMAIL_RECEIVER env.")
-        return False
-    msg = MIMEMultipart()
-    msg["From"] = sender
-    msg["To"] = receiver
+def send_email_with_attachment(subject, body, to_addrs, attachment_path=None):
+    sender = os.getenv("EMAIL_SENDER")
+    password = os.getenv("EMAIL_PASSWORD")  # app password
+    if not sender or not password or not to_addrs:
+        log("⚠ Missing EMAIL_SENDER / EMAIL_PASSWORD / EMAIL_RECEIVER env.")
+        return False, "missing-config"
+    if isinstance(to_addrs, str): to_addrs=[to_addrs]
+    msg = EmailMessage()
     msg["Subject"] = subject
-
-    # HTML body
-    html = f"<pre>{body}</pre>"
-    msg.attach(MIMEText(html, "html"))
-
+    msg["From"] = sender
+    msg["To"] = ", ".join(to_addrs)
+    msg.set_content(body)
     if attachment_path and os.path.exists(attachment_path):
         with open(attachment_path, "rb") as f:
-            part = MIMEBase("application", "octet-stream")
-            part.set_payload(f.read())
-        encoders.encode_base64(part)
-        part.add_header("Content-Disposition", f"attachment; filename={os.path.basename(attachment_path)}")
-        msg.attach(part)
-    else:
-        log("⚠️ No attachment found – sending email without attachment.")
-
+            data=f.read()
+            msg.add_attachment(data, maintype="application", subtype="octet-stream", filename=os.path.basename(attachment_path))
     try:
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-            server.login(sender, password)
-            server.send_message(msg)
-        log(f"📧 Email sent to {receiver} (attachment={bool(attachment_path and os.path.exists(attachment_path))})")
-        return True
+        context = ssl.create_default_context()
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=context) as smtp:
+            smtp.login(sender, password)
+            smtp.send_message(msg)
+        log(f"📧 Email sent to {to_addrs} (attachment={bool(attachment_path)})")
+        return True, None
     except Exception as e:
-        log(f"❌ Email sending failed: {e}")
-        return False
+        log(f"⚠ Email sending failed: {e}")
+        return False, str(e)
