@@ -1,10 +1,11 @@
 """
-fetch_data.py — FINAL VERSION (Stable for GitHub Actions)
-- Robust parser for Mega 6/45 & Power 6/55
-- Auto-detect table or div-based structure
-- Retry + fallback sources
-- Normalize date, sort n1–n6
-- Save raw HTML for debugging
+fetch_data.py — FINAL VERSION (6 SOURCES)
+- Mega 6/45: ketquadientoan, minhngoc, lotto-8
+- Power 6/55: ketquadientoan, minhngoc, lotto-8
+- HTML auto-fallback (source1 → source2 → source3)
+- Robust parser for all formats
+- Sorting n1–n6
+- Public function: fetch_all_data()
 """
 
 import os
@@ -17,281 +18,257 @@ from io import StringIO
 from datetime import datetime
 from utils.logger import log
 
-# ------------------------------------------------------
-# CONFIG
-# ------------------------------------------------------
-N_PERIODS = 120
+HEADERS = {"User-Agent": "Mozilla/5.0"}
 
-PRIMARY_MEGA_URL  = "https://www.ketquadientoan.com/tat-ca-ky-xo-so-mega-6-45.html"
-PRIMARY_POWER_URL = "https://www.ketquadientoan.com/tat-ca-ky-xo-so-power-655.html"
-
-# Backup sources (ổn định hơn cho GitHub Actions)
-BACKUP_MEGA_URLS = [
-    "https://www.minhngoc.net.vn/ket-qua-xo-so/mien-bac/vietlott-mega-6-45.html",
-    "https://www.lotto-8.com/result/vietlott-mega645"
-]
-BACKUP_POWER_URLS = [
-    "https://www.minhngoc.net.vn/ket-qua-xo-so/mien-bac/vietlott-power-655.html",
-    "https://www.lotto-8.com/result/vietlott-power655"
+# -------------------------------------------------------------
+# URLs
+# -------------------------------------------------------------
+MEGA_SOURCES = [
+    "https://www.ketquadientoan.com/tat-ca-ky-xo-so-mega-6-45.html",
+    "https://www.minhngoc.net.vn/ket-qua-xo-so/dien-toan-vietlott/mega-6x45.html",
+    "https://www.lotto-8.com/Vietnam/listltoVM45.asp"
 ]
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                  "(KHTML, like Gecko) Chrome/120 Safari/537.36"
-}
+POWER_SOURCES = [
+    "https://www.ketquadientoan.com/tat-ca-ky-xo-so-power-655.html",
+    "https://www.minhngoc.net.vn/ket-qua-xo-so/dien-toan-vietlott/power-6x55.html",
+    "https://www.lotto-8.com/Vietnam/listltoVM55.asp"
+]
 
-SAVE_DEBUG_HTML = True       # Lưu HTML thô để debug nếu lỗi
-
-
-# ------------------------------------------------------
-# DATE NORMALIZATION
-# ------------------------------------------------------
+# -------------------------------------------------------------
+# Normalize Date
+# -------------------------------------------------------------
 def normalize_date(text):
     if not isinstance(text, str):
         return None
     text = text.strip()
+    text = re.sub(r"^\D{1,10},\s*", "", text)
 
-    # remove weekday
-    text = re.sub(r"^[^\d]+,\s*", "", text)
-
-    # try known formats
-    for fmt in ("%d/%m/%Y", "%d-%m-%Y", "%Y-%m-%d"):
+    for fmt in ("%d/%m/%Y", "%Y-%m-%d", "%d-%m-%Y"):
         try:
             return datetime.strptime(text, fmt).strftime("%Y-%m-%d")
         except:
             pass
 
-    # fallback
     try:
         return pd.to_datetime(text, dayfirst=True).strftime("%Y-%m-%d")
     except:
         return None
 
 
-# ------------------------------------------------------
-# FETCH HTML WITH RETRY
-# ------------------------------------------------------
-def fetch_html(url, name="unknown", retry=3, timeout=20):
+# -------------------------------------------------------------
+# Fetch HTML with Retry
+# -------------------------------------------------------------
+def fetch_html(url, retry=3):
     for i in range(retry):
         try:
-            r = requests.get(url, headers=HEADERS, timeout=timeout)
+            r = requests.get(url, headers=HEADERS, timeout=20)
             r.encoding = "utf-8"
-            if r.status_code == 200:
-                return r.text
-            log(f"[{name}] Status: {r.status_code}")
+            r.raise_for_status()
+            log(f"✔ Fetched HTML OK: {url}")
+            return r.text
         except Exception as e:
             log(f"[Retry {i+1}/{retry}] fetch error {url}: {e}")
             time.sleep(2)
     return None
 
 
-# ------------------------------------------------------
-# NUMBER EXTRACTOR (robust)
-# ------------------------------------------------------
-def extract_6_numbers(text, max_val):
-    nums = re.findall(r"\b\d{1,2}\b", text)
-    nums = [int(n) for n in nums if 1 <= int(n) <= max_val]
-    return sorted(nums[-6:]) if len(nums) >= 6 else None
-
-
-# ------------------------------------------------------
-# PARSE MEGA 6/45 (robust multi-structure)
-# ------------------------------------------------------
-def parse_mega(html, limit):
-    if not html:
-        return pd.DataFrame()
-
-    soup = BeautifulSoup(html, "lxml")
-
-    # 1) Try table-based parsing
-    tables = soup.find_all("table")
-    if tables:
-        all_rows = []
-        for tbl in tables:
-            for tr in tbl.find_all("tr"):
-                cols = [c.get_text(" ", strip=True) for c in tr.find_all(["td", "th"])]
-                if len(cols) < 2:
-                    continue
-
-                date = normalize_date(cols[0])
-                if not date:
-                    continue
-
-                nums = extract_6_numbers(" ".join(cols[1:]), 45)
-                if not nums:
-                    continue
-
-                all_rows.append({
-                    "date": date,
-                    "n1": nums[0], "n2": nums[1], "n3": nums[2],
-                    "n4": nums[3], "n5": nums[4], "n6": nums[5],
-                })
-
-        if all_rows:
-            df = pd.DataFrame(all_rows)
-            df.drop_duplicates(inplace=True)
-            df.sort_values("date", ascending=False, inplace=True)
-            return df.head(limit).reset_index(drop=True)
-
-    # 2) Try read_html fallback
+# -------------------------------------------------------------
+# Parse Mega (3 sources auto-detect)
+# -------------------------------------------------------------
+def parse_mega(html, limit=100):
+    # 1) Try pandas.read_html for structured tables
     try:
         dfs = pd.read_html(StringIO(html))
         for df in dfs:
-            rows = []
-            for _, row in df.iterrows():
-                row_str = " ".join(str(x) for x in row)
-                nums = extract_6_numbers(row_str, 45)
-                if not nums:
-                    continue
-                date_candidate = re.search(r"\d{1,2}[/-]\d{1,2}[/-]\d{4}", row_str)
-                if not date_candidate:
-                    continue
+            df.columns = [str(c).strip().lower() for c in df.columns]
+            num_col = None
+            date_col = None
 
-                rows.append({
-                    "date": normalize_date(date_candidate.group()),
-                    "n1": nums[0], "n2": nums[1], "n3": nums[2],
-                    "n4": nums[3], "n5": nums[4], "n6": nums[5],
-                })
+            # detect date column
+            for c in df.columns:
+                if df[c].astype(str).str.contains(r"\d{1,2}/\d{1,2}/\d{4}", na=False).any():
+                    date_col = c
+                    break
 
-            if rows:
-                df2 = pd.DataFrame(rows)
-                df2.drop_duplicates(inplace=True)
-                df2.sort_values("date", ascending=False, inplace=True)
-                return df2.head(limit).reset_index(drop=True)
+            # detect merged numbers
+            for c in df.columns:
+                if df[c].astype(str).str.contains(r"(\d+[, ]+){5}\d+", na=False).any():
+                    num_col = c
+                    break
+
+            if not num_col or not date_col:
+                continue
+
+            # extract 6 numbers
+            nums = df[num_col].astype(str).apply(lambda x: re.findall(r"\d+", x))
+            nums = nums[nums.apply(lambda x: len(x) >= 6)]
+            nums = nums.apply(lambda x: list(map(int, x[:6])))
+
+            temp = pd.DataFrame(nums.tolist(), columns=[f"n{i}" for i in range(1, 7)])
+            temp.insert(0, "date", df.loc[nums.index, date_col].astype(str))
+
+            return cleanup(temp, limit)
     except:
         pass
 
-    return pd.DataFrame()
-
-
-# ------------------------------------------------------
-# PARSE POWER 6/55 (detect table OR div-based)
-# ------------------------------------------------------
-def parse_power(html, limit):
-    if not html:
-        return pd.DataFrame()
-
+    # 2) If HTML is unstructured → lotto-8 format
     soup = BeautifulSoup(html, "lxml")
+    rows = soup.find_all("tr")
+    extracted = []
 
-    # (A) NEW LAYOUT: div-based list
-    items = soup.select(".list-result .item")
-    if items:
-        rows = []
-        for it in items:
-            date_txt = it.select_one(".col-date")
-            if not date_txt:
+    for tr in rows:
+        tds = tr.find_all("td")
+        if len(tds) < 7:
+            continue
+
+        date = normalize_date(tds[0].get_text(strip=True))
+        if not date:
+            continue
+
+        nums = re.findall(r"\d+", " ".join(td.get_text(strip=True) for td in tds[1:7]))
+        if len(nums) < 6:
+            continue
+
+        nums = sorted(list(map(int, nums[:6])))
+
+        extracted.append({
+            "date": date,
+            "n1": nums[0],
+            "n2": nums[1],
+            "n3": nums[2],
+            "n4": nums[3],
+            "n5": nums[4],
+            "n6": nums[5],
+        })
+
+    df = pd.DataFrame(extracted)
+    return cleanup(df, limit)
+
+
+# -------------------------------------------------------------
+# Parse Power (similar to Mega)
+# -------------------------------------------------------------
+def parse_power(html, limit=100):
+    # Try structured tables
+    try:
+        dfs = pd.read_html(StringIO(html))
+        for df in dfs:
+            # detect Power format: 6 columns containing numbers
+            cols = df.columns
+            if len(cols) < 6:
                 continue
-            date = normalize_date(date_txt.get_text(strip=True))
 
-            nums_txt = " ".join(
-                n.get_text(strip=True) for n in it.select(".col-number .number")
-            )
-            nums = extract_6_numbers(nums_txt, 55)
-            if not nums:
+            # find date column
+            date_col = None
+            for c in cols:
+                if df[c].astype(str).str.contains(r"\d{1,2}/\d{1,2}/\d{4}", na=False).any():
+                    date_col = c
+                    break
+            if not date_col:
                 continue
 
-            rows.append({
-                "date": date,
-                "n1": nums[0], "n2": nums[1], "n3": nums[2],
-                "n4": nums[3], "n5": nums[4], "n6": nums[5],
-            })
+            # detect number columns (at least 6 numbers)
+            num_cols = []
+            for c in cols:
+                if df[c].astype(str).str.contains(r"\d+", na=False).sum() > 10:
+                    num_cols.append(c)
+            if len(num_cols) < 6:
+                continue
 
-        if rows:
-            df = pd.DataFrame(rows)
-            df.drop_duplicates(inplace=True)
-            df.sort_values("date", ascending=False, inplace=True)
-            return df.head(limit).reset_index(drop=True)
+            # extract numbers
+            nums = df[num_cols].astype(str).applymap(lambda x: re.findall(r"\d+", x)[0] if re.findall(r"\d+", x) else None)
+            nums = nums.dropna().astype(int)
 
-        log("⚠ Power parser: found .item but no numbers extracted")
+            # sort numbers by row
+            sorted_nums = nums.apply(lambda row: sorted(row.values.tolist()), axis=1)
 
-    # (B) TABLE fallback
-    tables = soup.find_all("table")
-    if tables:
-        rows = []
-        for tbl in tables:
-            for tr in tbl.find_all("tr"):
-                txt = " ".join(td.get_text(" ", strip=True) for td in tr.find_all(["td","th"]))
-                nums = extract_6_numbers(txt, 55)
-                if not nums:
-                    continue
-                date = re.search(r"\d{1,2}[/-]\d{1,2}[/-]\d{4}", txt)
-                if not date:
-                    continue
+            temp = pd.DataFrame(sorted_nums.tolist(), columns=[f"n{i}" for i in range(1, 7)])
+            temp.insert(0, "date", df[date_col].astype(str))
 
-                rows.append({
-                    "date": normalize_date(date.group()),
-                    "n1": nums[0], "n2": nums[1], "n3": nums[2],
-                    "n4": nums[3], "n5": nums[4], "n6": nums[5],
-                })
+            return cleanup(temp, limit)
+    except:
+        pass
 
-        if rows:
-            df = pd.DataFrame(rows)
-            df.drop_duplicates(inplace=True)
-            df.sort_values("date", ascending=False, inplace=True)
-            return df.head(limit).reset_index(drop=True)
+    # Fallback to lotto-8 style
+    soup = BeautifulSoup(html, "lxml")
+    rows = soup.find_all("tr")
+    extracted = []
 
-    log("⚠ Power parser: no valid structure found")
-    return pd.DataFrame()
+    for tr in rows:
+        tds = tr.find_all("td")
+        if len(tds) < 7:
+            continue
+
+        date = normalize_date(tds[0].get_text(strip=True))
+        if not date:
+            continue
+
+        nums = re.findall(r"\d+", " ".join(td.get_text(strip=True) for td in tds[1:7]))
+        if len(nums) < 6:
+            continue
+
+        nums = sorted(list(map(int, nums[:6])))
+
+        extracted.append({
+            "date": date,
+            "n1": nums[0], "n2": nums[1], "n3": nums[2],
+            "n4": nums[3], "n5": nums[4], "n6": nums[5],
+        })
+
+    df = pd.DataFrame(extracted)
+    return cleanup(df, limit)
 
 
-# ------------------------------------------------------
-# VALIDATE OUTPUT DATAFRAME
-# ------------------------------------------------------
-def validate(df, max_num):
+# -------------------------------------------------------------
+# Clean & Finalize
+# -------------------------------------------------------------
+def cleanup(df, limit):
     if df.empty:
-        return False
-    if "date" not in df.columns:
-        return False
-    for i in range(1,7):
-        col = f"n{i}"
-        if col not in df.columns:
-            return False
-        if not df[col].between(1, max_num).all():
-            return False
-    return True
+        return df
+
+    df["date"] = df["date"].apply(normalize_date)
+    df.dropna(subset=["date"], inplace=True)
+
+    df.drop_duplicates(inplace=True)
+    df.sort_values("date", ascending=False, inplace=True)
+
+    return df.head(limit).reset_index(drop=True)
 
 
-# ------------------------------------------------------
-# PUBLIC: FETCH ALL DATA WITH FALLBACK
-# ------------------------------------------------------
+# -------------------------------------------------------------
+# Public: fetch_all_data()
+# -------------------------------------------------------------
 def fetch_all_data(limit=100, save_dir="data"):
     os.makedirs(save_dir, exist_ok=True)
 
-    # ---------- MEGA ----------
-    log("🔹 Fetching Mega 6/45...")
-    html = fetch_html(PRIMARY_MEGA_URL, "MEGA")
-    if SAVE_DEBUG_HTML and html:
-        open(os.path.join(save_dir,"debug_mega.html"),"w",encoding="utf-8").write(html)
-
-    mega_df = parse_mega(html, limit)
-    if not validate(mega_df, 45):
-        log("⚠ Mega main source invalid → trying backups...")
-        for url in BACKUP_MEGA_URLS:
-            h = fetch_html(url, "MEGA-BACKUP")
-            if not h:
-                continue
-            mega_df = parse_mega(h, limit)
-            if validate(mega_df, 45):
+    # 1) MEGA
+    mega_df = pd.DataFrame()
+    for url in MEGA_SOURCES:
+        log(f"🔹 Fetching Mega: {url}")
+        html = fetch_html(url)
+        if html:
+            df = parse_mega(html, limit)
+            if not df.empty:
+                mega_df = df
                 break
+    if mega_df.empty:
+        log("❌ Mega: all sources failed")
 
-    # ---------- POWER ----------
-    log("🔹 Fetching Power 6/55...")
-    html = fetch_html(PRIMARY_POWER_URL, "POWER")
-    if SAVE_DEBUG_HTML and html:
-        open(os.path.join(save_dir,"debug_power.html"),"w",encoding="utf-8").write(html)
-
-    power_df = parse_power(html, limit)
-    if not validate(power_df, 55):
-        log("⚠ Power main source invalid → trying backups...")
-        for url in BACKUP_POWER_URLS:
-            h = fetch_html(url, "POWER-BACKUP")
-            if not h:
-                continue
-            power_df = parse_power(h, limit)
-            if validate(power_df, 55):
+    # 2) POWER
+    power_df = pd.DataFrame()
+    for url in POWER_SOURCES:
+        log(f"🔹 Fetching Power: {url}")
+        html = fetch_html(url)
+        if html:
+            df = parse_power(html, limit)
+            if not df.empty:
+                power_df = df
                 break
+    if power_df.empty:
+        log("❌ Power: all sources failed")
 
-    # ---------- SAVE ----------
+    # Save raw data
     mega_df.to_csv(os.path.join(save_dir, "mega_6_45_raw.csv"), index=False)
     power_df.to_csv(os.path.join(save_dir, "power_6_55_raw.csv"), index=False)
 
