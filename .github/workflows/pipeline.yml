@@ -32,3 +32,11 @@ jobs:
         with:
           name: mega_power_data
           path: data/
+       
+      - name: Run pipeline
+        env:
+          EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
+          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+          EMAIL_RECEIVER: ${{ secrets.EMAIL_RECEIVER }}
+        run: |
+          python main.py
