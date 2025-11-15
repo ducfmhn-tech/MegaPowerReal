@@ -117,8 +117,8 @@ def ensemble_predict_topk(mega_df, power_df, rf_path, gb_path, topk=6):
         ])
     Xcur = _np.array(Xcur)
 
-    rf = joblib.load(rf_path) if os.path.exists(rf_path) else None
-    gb = joblib.load(gb_path) if os.path.exists(gb_path) else None
+    rf = joblib.load(rf_path) if (rf_path and os.path.exists(rf_path)) else None
+    gb = joblib.load(gb_path) if (gb_path and os.path.exists(gb_path)) else None
 
     probs_rf = rf.predict_proba(Xcur)[:, 1] if rf else _np.zeros(max_mega)
     probs_gb = gb.predict_proba(Xcur)[:, 1] if gb else _np.zeros(max_mega)
