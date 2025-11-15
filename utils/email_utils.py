@@ -3,6 +3,12 @@ import os, smtplib, ssl
 from email.message import EmailMessage
 from utils.logger import log
 
+sender = os.getenv("EMAIL_SENDER")
+password = os.getenv("EMAIL_PASSWORD")
+receiver = os.getenv("EMAIL_RECEIVER")
+if not sender or not password or not receiver:
+    log("⚠ Missing EMAIL_SENDER / EMAIL_PASSWORD / EMAIL_RECEIVER env.")
+    return "missing-config"
 def send_email_with_attachment(subject, body, to_addrs, attachment_path=None):
     sender = os.getenv("EMAIL_SENDER")
     password = os.getenv("EMAIL_PASSWORD")  # app password
