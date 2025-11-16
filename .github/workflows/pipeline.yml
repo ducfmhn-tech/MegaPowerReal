@@ -8,34 +8,27 @@ on:
 jobs:
   run:
     runs-on: ubuntu-latest
-
     steps:
-      # -----------------------------------------------------
-      # CHECKOUT CODE
-      # -----------------------------------------------------
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      # -----------------------------------------------------
-      # SETUP PYTHON
-      # -----------------------------------------------------
       - name: Setup Python
         uses: actions/setup-python@v4
         with:
           python-version: "3.10"
 
-      # -----------------------------------------------------
-      # INSTALL DEPENDENCIES
-      # -----------------------------------------------------
+      - name: Install system deps (chromium & chromedriver)
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y chromium-browser chromium-chromedriver
+          chromium-browser --version || true
+          chromedriver --version || true
+
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # -----------------------------------------------------
-      # RUN PIPELINE
-      # -----------------------------------------------------
-      - name: Run MegaPowerReal Pipeline
+      - name: Run pipeline
         env:
           EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
@@ -43,14 +36,13 @@ jobs:
         run: |
           python main.py
 
-      # -----------------------------------------------------
-      # UPLOAD OUTPUT FILES
-      # -----------------------------------------------------
-      - name: Upload pipeline output
+      - name: Upload outputs
         uses: actions/upload-artifact@v4
         with:
           name: mega_power_outputs
           path: |
             data/
-            last_prediction.json
+            data/*.xlsx
+            data/*.csv
+            data/last_prediction.json
           if-no-files-found: warn
