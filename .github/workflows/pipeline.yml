@@ -1,3 +1,15 @@
+name: MegaPower Prediction Pipeline
+Kích hoạt workflow
+on:
+1. Chạy theo lịch trình: 03:00 UTC mỗi ngày (tương đương 10:00 sáng Việt Nam)
+schedule:
+- cron: '0 3 * * *'
+2. Kích hoạt thủ công qua giao diện GitHub
+workflow_dispatch:
+jobs:
+run:
+# Chọn runner: Ubuntu Linux mới nhất
+runs-on: ubuntu-latest
 steps:
   - name: Checkout Code
     uses: actions/checkout@v4
