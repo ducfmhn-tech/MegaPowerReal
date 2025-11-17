@@ -174,19 +174,25 @@ def fetch_all_data(limit=100, save_dir="data"):
     for url in MEGA_URLS:
         log(f"🔹 Fetching Mega: {url}")
         html = get_html(url)
+        # SỬA LỖI TẠI ĐÂY: Bỏ qua nếu tải HTML thất bại
         if not html:
+            log(f"⚠ Skipping Mega URL due to fetch failure: {url}")
             continue
+            
         if "ketquadientoan" in url:
             mega_dfs.append(parse_mega_ketquad(html))
         else:
             mega_dfs.append(parse_table_html(html, mega=True))
-
-    power_dfs = []
-    for url in POWER_URLS:
+            
+     power_dfs = []
+     for url in POWER_URLS:
         log(f"🔹 Fetching Power: {url}")
         html = get_html(url)
+        # SỬA LỖI TẠI ĐÂY: Bỏ qua nếu tải HTML thất bại
         if not html:
+            log(f"⚠ Skipping Power URL due to fetch failure: {url}")
             continue
+            
         if "ketquadientoan" in url:
             power_dfs.append(parse_power_ketquad(html))
         else:
