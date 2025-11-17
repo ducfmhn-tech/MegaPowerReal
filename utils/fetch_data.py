@@ -1,195 +1,266 @@
-import os, joblib, numpy as np
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score
+import os, time, re
+import requests
 import pandas as pd
+from bs4 import BeautifulSoup
+from io import StringIO
+from datetime import datetime
 from utils.logger import log
 
-try:
-    from xgboost import XGBClassifier
-    HAS_XGB = True
-except ImportError:
-    HAS_XGB = False
-    log("⚠ Thư viện XGBoost không được tìm thấy. Chỉ sử dụng RandomForest.")
+# --- Configuration ---
+HEADERS = {"User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
 
-def build_Xy(mega_df, power_df, window=50, max_num=45):
-    """
-    Xây dựng ma trận đặc trưng (X) và nhãn (y) cho mô hình dự đoán theo số (per-number prediction).
-    X là tần suất của từng số trong window, y là 1 nếu số đó xuất hiện trong lượt quay tiếp theo.
-    """
-    # Lấy độ dài tối thiểu của 2 df
-    minlen = min(len(mega_df), len(power_df))
-    if minlen <= window:
-        log(f"    -> Không đủ dữ liệu (chỉ có {minlen} dòng) cho window={window}.")
-        return None, None
-        
-    X = []
-    y = []
-    
-    # Lặp qua lịch sử từ điểm bắt đầu của cửa sổ
-    for end in range(window, minlen):
-        # Lấy cửa sổ lịch sử
-        mw = mega_df.iloc[end-window:end]
-        pw = power_df.iloc[end-window:end]
-        
-        # Tính tần suất của từng số trong cửa sổ
-        m_counts = [0] * max_num  # Tần suất Mega (1-45)
-        p_counts = [0] * 55      # Tần suất Power (1-55)
-        
-        for i in range(1, 7):
-            # Tính tần suất Mega
-            if f"n{i}" in mw.columns:
-                for v in mw[f"n{i}"].dropna().astype(int).tolist():
-                    if 1 <= v <= max_num:
-                        m_counts[v-1] += 1
-            # Tính tần suất Power (full 55)
-            if f"n{i}" in pw.columns:
-                for v in pw[f"n{i}"].dropna().astype(int).tolist():
-                    if 1 <= v <= 55:
-                        p_counts[v-1] += 1
+MEGA_URLS = [
+    "https://www.ketquadientoan.com/tat-ca-ky-xo-so-mega-6-45.html",
+    "https://www.minhngoc.net.vn/ket-qua-xo-so/dien-toan-vietlott/mega-6x45.html",
+    "https://www.lotto-8.com/Vietnam/listltoVM45.asp"
+]
+POWER_URLS = [
+    "https://www.ketquadientoan.com/tat-ca-ky-xo-so-power-655.html",
+    "https://www.minhngoc.net.vn/ket-qua-xo-so/dien-toan-vietlott/power-6x55.html",
+    "https://www.lotto-8.com/Vietnam/listltoVM55.asp"
+]
 
-        # Xây dựng ma trận X (Feature Matrix)
-        for n in range(1, max_num + 1):
-            # Tần suất Power, chỉ lấy 45 số đầu cho Mega model
-            power_count_mapped = p_counts[n-1] if n-1 < len(p_counts) else 0
+# --- Core Utility Functions ---
 
-            feat = [
-                m_counts[n-1],                           # 1. Tần suất tuyệt đối Mega
-                power_count_mapped,                      # 2. Tần suất tuyệt đối Power (cho số n)
-                m_counts[n-1] / (window * 6),            # 3. Tần suất chuẩn hóa Mega
-                power_count_mapped / (window * 6)        # 4. Tần suất chuẩn hóa Power
-            ]
-            X.append(feat)
-
-        # Xây dựng vector y (Target Labels) - Lượt quay tiếp theo
+def get_html(url, retry=3, timeout=15):
+    """Fetches HTML content from a URL with retry logic."""
+    for i in range(retry):
         try:
-            next_draw = {int(mega_df.iloc[end][f"n{i}"]) for i in range(1, 7)}
-        except Exception:
-            next_draw = set()
+            r = requests.get(url, headers=HEADERS, timeout=timeout)
+            r.encoding = r.apparent_encoding or "utf-8"
+            r.raise_for_status() # Raise HTTPError for bad responses (4xx or 5xx)
+            log(f"✔ Fetched HTML OK: {url}")
+            return r.text
+        except Exception as e:
+            log(f"[Retry {i+1}/{retry}] fetch error {url}: {e}")
+            time.sleep(1)
+    return None
 
-        for n in range(1, max_num + 1):
-            # Nhãn là 1 nếu số n xuất hiện trong lượt quay tiếp theo, 0 nếu không
-            y.append(1 if n in next_draw else 0)
+def normalize_date(text):
+    """Attempts to parse various date formats into YYYY-MM-DD."""
+    if not isinstance(text, str):
+        return None
+    text = text.strip()
+    
+    # Remove weekday text if present (e.g., "Thứ 4, 01/01/2025")
+    text = re.sub(r"Thứ \d, ?", "", text)
+    
+    # Regex for common date patterns (dd/mm/yyyy or dd-mm-yyyy)
+    m = re.search(r"(\d{1,2}[/\-]\d{1,2}[/\-]\d{4})", text)
+    if m:
+        for fmt in ("%d/%m/%Y","%d-%m-%Y","%Y-%m-%d"):
+            try:
+                # Use the matched group for strict parsing
+                return datetime.strptime(m.group(1), fmt).strftime("%Y-%m-%d")
+            except:
+                pass
+    
+    # Regex for ISO format (yyyy-mm-dd)
+    m2 = re.search(r"(\d{4}-\d{2}-\d{2})", text)
+    if m2:
+        return m2.group(1)
+    
+    # Fallback to pandas date parsing
+    try:
+        return pd.to_datetime(text, dayfirst=True, errors='coerce').strftime("%Y-%m-%d")
+    except:
+        return None
+
+# --- Specialized Parsers ---
+
+def _extract_and_sort_nums(balls):
+    """Extracts numbers from BeautifulSoup elements and returns them sorted."""
+    nums = []
+    for b in balls[:6]:
+        try:
+            num = int(b.get_text(strip=True))
+            nums.append(num)
+        except ValueError:
+            continue
+    if len(nums) < 6:
+        return None
+    return sorted(nums)
+
+# Parse ketquadientoan Mega (Custom structure)
+def parse_mega_ketquad(html):
+    """Parser for ketquadientoan.com (Mega 6/45)."""
+    soup = BeautifulSoup(html, "lxml")
+    rows = []
+    # Targeting the result list structure
+    items = soup.select(".result-list.mega .result-row") 
+    if not items:
+        # Fallback to older .item structure
+        items = soup.select(".item")
+        
+    for it in items:
+        # Check for different date/ball selectors
+        date_el = it.select_one(".draw-date") or it.select_one(".day")
+        balls = it.select(".ball-mega") or it.select(".b45 div")
+
+        if not date_el or len(balls) < 6:
+            continue
+        
+        date = normalize_date(date_el.get_text(strip=True))
+        nums = _extract_and_sort_nums(balls)
+        
+        if not date or not nums:
+            continue
             
-    return np.array(X), np.array(y)
+        rows.append({"date":date, "n1":nums[0],"n2":nums[1],"n3":nums[2],
+                     "n4":nums[3],"n5":nums[4],"n6":nums[5], "source":"ketquadientoan_mega"})
+    return pd.DataFrame(rows)
 
-def train_models_and_save(mega_df, power_df, window=50, save_dir="models"):
-    """
-    Huấn luyện Random Forest và (nếu có) XGBoost, sau đó lưu mô hình và trả về metrics.
-    """
-    log("    -> Xây dựng X và y...")
-    X, y = build_Xy(mega_df, power_df, window=window)
-    
-    if X is None or y is None or len(X) == 0:
-        log("❌ Dữ liệu không đủ hoặc có lỗi khi xây dựng X/y.")
-        return None, None, {}
+# Parse ketquadientoan Power (Custom structure)
+def parse_power_ketquad(html):
+    """Parser for ketquadientoan.com (Power 6/55)."""
+    soup = BeautifulSoup(html, "lxml")
+    rows = []
+    items = soup.select(".result-list.power .result-row")
+    if not items:
+        items = soup.select(".item")
+
+    for it in items:
+        date_el = it.select_one(".draw-date") or it.select_one(".day")
+        balls = it.select(".ball-power") or it.select(".b55 div")
+        bonus_el = it.select_one(".ball-bonus") or it.select_one(".ball-yellow")
         
-    log(f"    -> Kích thước tập huấn luyện: X={X.shape}, y={y.shape}")
-    Xtr, Xval, ytr, yval = train_test_split(X, y, test_size=0.2, random_state=42)
-    
-    metrics = {}
-    
-    # 1. Random Forest (RF)
-    log("    -> Huấn luyện Random Forest...")
-    rf = RandomForestClassifier(n_estimators=200, random_state=42, n_jobs=-1, max_depth=10)
-    rf.fit(Xtr, ytr)
-    rf_path = os.path.join(save_dir, "rf_pernum_mega.joblib")
-    joblib.dump(rf, rf_path)
-    metrics["acc_rf"] = accuracy_score(yval, rf.predict(Xval))
-
-    # 2. XGBoost (GB)
-    gb_path = None
-    if HAS_XGB:
-        log("    -> Huấn luyện XGBoost...")
-        gb = XGBClassifier(n_estimators=200, use_label_encoder=False, 
-                           eval_metric="logloss", verbosity=0, random_state=42, 
-                           n_jobs=-1)
-        gb.fit(Xtr, ytr)
-        gb_path = os.path.join(save_dir, "gb_pernum_mega.joblib")
-        joblib.dump(gb, gb_path)
-        metrics["acc_gb"] = accuracy_score(yval, gb.predict(Xval))
-    
-    log(f"    -> Huấn luyện hoàn tất. RF Accuracy: {metrics.get('acc_rf'):.4f}")
-    
-    return rf_path, gb_path, metrics
-
-def ensemble_predict_topk(mega_df, power_df, rf_path=None, gb_path=None, topk=6, window=50):
-    """
-    Sử dụng mô hình và heuristic để dự đoán 6 con số cho Mega và Power.
-    """
-    log("    -> Bắt đầu dự đoán...")
-
-    # --- 1. DỰ ĐOÁN MEGA (Sử dụng Model Ensemble) ---
-    max_num_mega = 45
-    
-    # Tính tần suất trên cửa sổ cuối cùng (window)
-    mw = mega_df.tail(window)
-    pw = power_df.tail(window)
-    
-    m_counts = [0] * max_num_mega
-    p_counts_mega = [0] * max_num_mega
-    p_counts_full = [0] * 55 # Tính full cho Power Heuristic
-
-    for i in range(1, 7):
-        if f"n{i}" in mw.columns:
-            for v in mw[f"n{i}"].dropna().astype(int).tolist():
-                if 1 <= v <= max_num_mega:
-                    m_counts[v-1] += 1
+        if not date_el or len(balls) < 6:
+            continue
+            
+        date = normalize_date(date_el.get_text(strip=True))
+        nums = _extract_and_sort_nums(balls)
         
-        if f"n{i}" in pw.columns:
-            for v in pw[f"n{i}"].dropna().astype(int).tolist():
-                if 1 <= v <= 55:
-                    p_counts_full[v-1] += 1
-                    if 1 <= v <= max_num_mega:
-                        p_counts_mega[v-1] += 1
-
-
-    # Chuẩn bị ma trận đặc trưng cho lần dự đoán hiện tại
-    Xcur = []
-    for idx in range(max_num_mega):
-        m_c = m_counts[idx]
-        p_c = p_counts_mega[idx]
-        Xcur.append([m_c, p_c, m_c / (window * 6), p_c / (window * 6)])
-    Xcur = np.array(Xcur)
-
-    # Tải mô hình
-    rf = joblib.load(rf_path) if rf_path and os.path.exists(rf_path) else None
-    gb = joblib.load(gb_path) if gb_path and os.path.exists(gb_path) and HAS_XGB else None
-
-    # Tính điểm
-    if rf is None and gb is None:
-        log("    -> Cảnh báo: Không tìm thấy mô hình. Dùng Heuristic cơ bản cho Mega.")
-        # Heuristic Fallback: ưu tiên Mega + một phần Power
-        score_mega = np.array(m_counts) + 0.3 * np.array(p_counts_mega)
-    else:
-        probs_rf = rf.predict_proba(Xcur)[:,1] if rf is not None else 0
-        probs_gb = gb.predict_proba(Xcur)[:,1] if gb is not None else 0
+        if not date or not nums:
+            continue
+            
+        bonus = int(bonus_el.get_text(strip=True)) if bonus_el else None 
         
-        # Ensemble: Lấy trung bình các xác suất dự đoán
-        count = (1 if rf is not None else 0) + (1 if gb is not None else 0)
-        score_mega = (probs_rf + probs_gb) / count
+        rows.append({"date":date,"n1":nums[0],"n2":nums[1],"n3":nums[2],
+                     "n4":nums[3],"n5":nums[4],"n6":nums[5],
+                     "bonus":bonus, "source":"ketquadientoan_power"})
+    return pd.DataFrame(rows)
 
-    # Chọn Top K cho Mega
-    idxs_mega = score_mega.argsort()[-topk:][::-1]
-    pred_nums_mega = sorted([int(i + 1) for i in idxs_mega])
-
-
-    # --- 2. DỰ ĐOÁN POWER (Sử dụng Heuristic dựa trên tần suất) ---
-    max_num_power = 55
+# Generalized Parser for table-based pages
+def parse_table_html(html, source_name):
+    """Uses pandas.read_html to parse tabular data from MinhNgoc and Lotto-8."""
+    try:
+        df_list = pd.read_html(StringIO(html), flavor='bs4')
+    except Exception as e:
+        log(f"⚠ Pandas read_html failed for {source_name}: {e}")
+        return pd.DataFrame()
+        
+    if not df_list:
+        return pd.DataFrame()
+        
+    # Assume the largest table is the one with the results
+    df = df_list[0] 
+    if len(df_list) > 1:
+        df = max(df_list, key=lambda x: x.shape[0])
+        
+    rows = []
     
-    # Power Heuristic Score: Tần suất Power + trọng số nhỏ từ tần suất Mega
-    # Sử dụng p_counts_full đã tính ở trên.
-    score_power = np.array(p_counts_full)
-    
-    # Thêm trọng số từ Mega (chỉ cho các số 1-45, phần còn lại là 0)
-    mega_weights = np.array([m_counts[i] * 0.2 if i < max_num_mega else 0 for i in range(max_num_power)])
-    score_power = score_power + mega_weights
+    # Iterate through each row and attempt to extract date and 6 numbers
+    for _, r in df.iterrows():
+        try:
+            # Join all row values into a single string for regex search
+            row_text = " ".join(map(str, r.values)) 
+            
+            # Find the date first
+            date = normalize_date(row_text)
+            if not date:
+                continue
+                
+            # Find all numbers in the row text
+            nums_raw = re.findall(r"\b\d+\b", row_text)
+            # Filter and take only the first 6 valid numbers (max 55 is a safe filter)
+            nums = [int(x) for x in nums_raw if 1 <= int(x) <= 55] 
+            
+            if len(nums) < 6:
+                continue
+                
+            nums = sorted(nums[:6])
+            
+            rec = {"date":date, "n1":nums[0],"n2":nums[1],"n3":nums[2],
+                   "n4":nums[3],"n5":nums[4],"n6":nums[5], "source":source_name}
+            rows.append(rec)
+            
+        except Exception as e:
+            log(f"⚠ Error processing row from {source_name}: {e}")
+            continue
+            
+    return pd.DataFrame(rows)
 
-    # Chọn Top K cho Power
-    idxs_power = score_power.argsort()[-topk:][::-1]
-    pred_nums_power = sorted([int(i + 1) for i in idxs_power])
+# --- Merging and Finalization ---
 
-    probs_dict = {"mega_scores": score_mega.tolist(), "power_scores": score_power.tolist()}
+def merge_dfs(dfs, game_name, limit=None):
+    """Combines and cleans dataframes from multiple sources."""
+    dfs = [d for d in dfs if d is not None and not d.empty]
+    if not dfs:
+        log(f"⚠ No data fetched for {game_name}.")
+        return pd.DataFrame()
+        
+    df = pd.concat(dfs, ignore_index=True)
     
-    log("    -> Dự đoán hoàn tất.")
-    return pred_nums_mega, pred_nums_power, probs_dict
+    # Ensure date is properly normalized and drop rows where date failed to normalize
+    if "date" in df.columns:
+        df["date"] = df["date"].astype(str).apply(normalize_date)
+        df = df.dropna(subset=["date"])
+        
+    # Drop duplicates based on the draw numbers for a specific date
+    df = df.drop_duplicates(subset=["date","n1","n2","n3","n4","n5","n6"])
+    
+    # Sort by date descending and limit rows
+    df = df.sort_values("date", ascending=False).reset_index(drop=True)
+    if limit:
+        df = df.head(limit).reset_index(drop=True)
+        
+    return df
+
+def fetch_all_data(limit=100, save_dir="data"):
+    """Public API: Fetches, cleans, merges, and saves all lottery data."""
+    os.makedirs(save_dir, exist_ok=True)
+    log(f"🔹 Bắt đầu thu thập dữ liệu (limit={limit})...")
+
+    # --- Fetch Mega Data ---
+    mega_dfs = []
+    for url in MEGA_URLS:
+        html = get_html(url)
+        if not html:
+            continue
+            
+        if "ketquadientoan" in url:
+            mega_dfs.append(parse_mega_ketquad(html))
+        elif "minhngoc" in url:
+            mega_dfs.append(parse_table_html(html, "minhngoc_mega"))
+        elif "lotto-8" in url:
+            mega_dfs.append(parse_table_html(html, "lotto8_mega"))
+            
+    mega_df = merge_dfs(mega_dfs, "Mega", limit=limit)
+
+    # --- Fetch Power Data ---
+    power_dfs = []
+    for url in POWER_URLS:
+        html = get_html(url)
+        if not html:
+            continue
+            
+        if "ketquadientoan" in url:
+            power_dfs.append(parse_power_ketquad(html))
+        elif "minhngoc" in url:
+            power_dfs.append(parse_table_html(html, "minhngoc_power"))
+        elif "lotto-8" in url:
+            power_dfs.append(parse_table_html(html, "lotto8_power"))
+
+    power_df = merge_dfs(power_dfs, "Power", limit=limit)
+
+    # --- Save Results ---
+    try:
+        mega_df.to_csv(os.path.join(save_dir, "mega_6_45_raw.csv"), index=False)
+        power_df.to_csv(os.path.join(save_dir, "power_6_55_raw.csv"), index=False)
+    except Exception as e:
+        log(f"⚠ Không thể lưu CSV thô: {e}")
+
+    log(f"✅ Dữ liệu cuối cùng - Mega: {len(mega_df)} dòng, Power: {len(power_df)} dòng")
+    return mega_df, power_df
+
+__all__ = ["fetch_all_data"]
