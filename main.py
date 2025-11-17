@@ -1,49 +1,58 @@
+# main.py
 import os
 import pandas as pd
 from datetime import datetime
 from utils.fetch_data import fetch_all_data
-from utils.email_utils import send_email
 
-LIMIT = 100
-mega_df, power_df = fetch_all_data(limit=LIMIT)
+import smtplib
+from email.message import EmailMessage
 
-print(f"🔥 Mega rows: {len(mega_df)}, Power rows: {len(power_df)}")
-LIMIT = 100
 REPORT_DIR = "./reports"
 os.makedirs(REPORT_DIR, exist_ok=True)
-today_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-report_path = f"{REPORT_DIR}/mega_power_report_{today_str}.xlsx"
 
-# --- Fetch dữ liệu ---
-mega_data, power_data = fetch_all_data(limit=LIMIT)
-print(f"✅ Dữ liệu cuối cùng - Mega: {len(mega_data)} dòng, Power: {len(power_data)} dòng")
+def send_email(report_path):
+    EMAIL_TO = os.getenv("EMAIL_TO")
+    EMAIL_USER = os.getenv("EMAIL_USER")
+    EMAIL_PASS = os.getenv("EMAIL_PASS")
+    EMAIL_HOST = os.getenv("EMAIL_HOST")
+    EMAIL_PORT = int(os.getenv("EMAIL_PORT", "465"))
 
-# --- Dự đoán heuristic ---
-mega_pred = [1, 3, 6, 12, 19, 45]
-power_pred = [1, 3, 6, 12, 19, 45]
-
-# --- Tạo báo cáo Excel ---
-with pd.ExcelWriter(report_path) as writer:
-    pd.DataFrame(mega_data).to_excel(writer, sheet_name="Mega", index=False)
-    pd.DataFrame(power_data).to_excel(writer, sheet_name="Power", index=False)
-    pd.DataFrame({"Mega_Pred": [mega_pred], "Power_Pred": [power_pred]}).to_excel(writer, sheet_name="Predictions", index=False)
-
-print(f"✅ Báo cáo đã lưu tại {report_path}")
-
-# --- Gửi email ---
-try:
-    email_config = {
-        "host": os.environ.get("EMAIL_HOST"),
-        "port": int(os.environ.get("EMAIL_PORT") or 587),
-        "user": os.environ.get("EMAIL_USER"),
-        "password": os.environ.get("EMAIL_PASS"),
-        "to": os.environ.get("EMAIL_TO")
-    }
-    if all(email_config.values()):
-        send_email(report_path, email_config)
-    else:
+    if not EMAIL_TO:
         print("⚠ Thiếu cấu hình email, bỏ qua gửi email")
-except Exception as e:
-    print(f"❌ Lỗi gửi email: {e}")
+        return
 
-print("=== PIPELINE HOÀN THÀNH ===")
+    msg = EmailMessage()
+    msg['Subject'] = f"Báo cáo Mega/Power {datetime.now().strftime('%Y-%m-%d')}"
+    msg['From'] = EMAIL_USER
+    msg['To'] = EMAIL_TO
+    msg.set_content("Vui lòng xem báo cáo đính kèm.")
+
+    with open(report_path, "rb") as f:
+        msg.add_attachment(f.read(), maintype="application", subtype="vnd.openxmlformats-officedocument.spreadsheetml.sheet", filename=os.path.basename(report_path))
+
+    with smtplib.SMTP_SSL(EMAIL_HOST, EMAIL_PORT) as server:
+        server.login(EMAIL_USER, EMAIL_PASS)
+        server.send_message(msg)
+    print("✅ Email đã gửi thành công!")
+
+def main():
+    print("=== BẮT ĐẦU PIPELINE DỰ ĐOÁN MEGA/POWER ===")
+    mega_df, power_df = fetch_all_data()
+
+    print(f"🔥 Mega rows: {len(mega_df)}, Power rows: {len(power_df)}")
+
+    # Tạo báo cáo Excel
+    now_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+    report_path = os.path.join(REPORT_DIR, f"mega_power_report_{now_str}.xlsx")
+    with pd.ExcelWriter(report_path) as writer:
+        mega_df.to_excel(writer, sheet_name="Mega", index=False)
+        power_df.to_excel(writer, sheet_name="Power", index=False)
+    print(f"✅ Báo cáo đã lưu tại {report_path}")
+
+    # Gửi email nếu có cấu hình
+    send_email(report_path)
+
+    print("=== PIPELINE HOÀN THÀNH ===")
+
+if __name__ == "__main__":
+    main()
