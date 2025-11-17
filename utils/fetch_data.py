@@ -1,66 +1,129 @@
-import pandas as pd
+# utils/fetch_data.py
 import requests
+import pandas as pd
 from io import StringIO
 from time import sleep
 
-SITE_CONFIGS = {
-    "https://www.ketquadientoan.com/tat-ca-ky-xo-so-mega-6-45.html": 2,
-    "https://www.minhngoc.net.vn/ket-qua-xo-so/dien-toan-vietlott/mega-6x45.html": 2,
-    "https://www.lotto-8.com/Vietnam/listltoVM45.asp": 0,
-    "https://www.ketquadientoan.com/tat-ca-ky-xo-so-power-655.html": 2,
-    "https://www.minhngoc.net.vn/ket-qua-xo-so/dien-toan-vietlott/power-6x55.html": 2,
-    "https://www.lotto-8.com/Vietnam/listltoVM55.asp": 0,
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
 }
 
-HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-
-def fetch_table(url, table_index=2, timeout_sec=30, retries=2):
-    for attempt in range(retries + 1):
+def fetch_html(url, timeout_sec=30, retries=3, wait=1):
+    """Fetch HTML with retry. Return text or None."""
+    for attempt in range(1, retries + 1):
         try:
             r = requests.get(url, headers=HEADERS, timeout=timeout_sec)
             r.raise_for_status()
-            tables = pd.read_html(StringIO(r.text))  # fix FutureWarning, yêu cầu lxml hoặc html5lib
-            if len(tables) > table_index:
-                df = tables[table_index]
-                return df, len(df)
-            else:
-                print(f"⚠ Không tìm thấy bảng thứ {table_index} trên {url}")
-                return pd.DataFrame(), 0
+            r.encoding = 'utf-8'
+            return r.text
         except Exception as e:
-            print(f"❌ Lỗi fetch {url} (attempt {attempt+1}): {e}")
-            sleep(2)
-    return pd.DataFrame(), 0
+            print(f"❌ Lỗi fetch {url} (attempt {attempt}): {e}")
+            sleep(wait)
+    return None
 
-def fetch_all_data(limit_mega=100, limit_power=100):
-    mega_urls = [
-        "https://www.ketquadientoan.com/tat-ca-ky-xo-so-mega-6-45.html",
-        "https://www.minhngoc.net.vn/ket-qua-xo-so/dien-toan-vietlott/mega-6x45.html",
-        "https://www.lotto-8.com/Vietnam/listltoVM45.asp",
-    ]
-    power_urls = [
-        "https://www.ketquadientoan.com/tat-ca-ky-xo-so-power-655.html",
-        "https://www.minhngoc.net.vn/ket-qua-xo-so/dien-toan-vietlott/power-6x55.html",
-        "https://www.lotto-8.com/Vietnam/listltoVM55.asp",
-    ]
+def parse_table(html, url):
+    """Parse HTML and return standardized DataFrame with columns:
+    draw_date (datetime), n1..n6 (ints)."""
+    if not html:
+        return pd.DataFrame()
 
-    mega_df = pd.DataFrame()
-    for url in mega_urls:
-        idx = SITE_CONFIGS.get(url, 2)
-        df, n_rows = fetch_table(url, table_index=idx)
-        mega_df = pd.concat([mega_df, df], ignore_index=True).drop_duplicates()
-        print(f"🔹 Tổng số rows Mega hiện tại: {len(mega_df)}")
-        if len(mega_df) >= limit_mega:
+    try:
+        tables = pd.read_html(StringIO(html))
+    except Exception as e:
+        print(f"❌ Lỗi đọc bảng từ {url}: {e}")
+        return pd.DataFrame()
+
+    # Choose table: prefer table index 2 if many tables, else largest table
+    if len(tables) >= 3:
+        df = tables[2]
+    else:
+        df = max(tables, key=lambda x: x.shape[0], default=pd.DataFrame())
+
+    if df.empty:
+        return pd.DataFrame()
+
+    df = df.copy()
+    df.columns = df.columns.astype(str)
+
+    # Heuristic to find date column
+    date_col = None
+    for c in df.columns:
+        low = c.lower()
+        if "ngày" in low or "date" in low or "time" in low:
+            date_col = c
             break
-    mega_df = mega_df.head(limit_mega)
+    if date_col is None:
+        date_col = df.columns[0]
 
-    power_df = pd.DataFrame()
-    for url in power_urls:
-        idx = SITE_CONFIGS.get(url, 2)
-        df, n_rows = fetch_table(url, table_index=idx)
-        power_df = pd.concat([power_df, df], ignore_index=True).drop_duplicates()
-        print(f"🔹 Tổng số rows Power hiện tại: {len(power_df)}")
-        if len(power_df) >= limit_power:
+    # Rename to draw_date
+    df = df.rename(columns={date_col: "draw_date"})
+
+    # Heuristic to find numbers column: search columns containing at least 6 numbers in a cell
+    nums_col = None
+    for c in df.columns:
+        try:
+            sample = df[c].astype(str).head(20).tolist()
+        except Exception:
+            sample = []
+        matches = sum(1 for s in sample if len([t for t in s.replace('-', ' ').replace(',', ' ').split() if t.isdigit()]) >= 6)
+        if matches >= 1:
+            nums_col = c
             break
-    power_df = power_df.head(limit_power)
 
-    return mega_df, power_df
+    # If not found, assume second column
+    if nums_col is None and len(df.columns) >= 2:
+        nums_col = df.columns[1]
+    if nums_col is None:
+        print(f"⚠ Không tìm thấy cột số tại {url}")
+        return pd.DataFrame()
+
+    def extract_nums(x):
+        if pd.isna(x):
+            return [None]*6
+        s = str(x)
+        parts = s.replace('-', ' ').replace(',', ' ').split()
+        nums = [int(p) for p in parts if p.isdigit()]
+        if len(nums) >= 6:
+            return nums[:6]
+        # try to parse digits inside punctuation
+        import re
+        nums2 = re.findall(r'\d+', s)
+        nums2 = [int(n) for n in nums2]
+        if len(nums2) >= 6:
+            return nums2[:6]
+        # fallback None
+        return [None]*6
+
+    # apply extraction
+    nums_df = df[nums_col].apply(lambda v: pd.Series(extract_nums(v), index=["n1","n2","n3","n4","n5","n6"]))
+    df = pd.concat([df, nums_df], axis=1)
+
+    # parse draw_date
+    df["draw_date"] = pd.to_datetime(df["draw_date"], dayfirst=True, errors="coerce")
+    df = df.dropna(subset=["draw_date"])
+
+    # convert n1..n6 to integers where possible
+    for i in range(1,7):
+        col = f"n{i}"
+        df[col] = pd.to_numeric(df[col], errors="coerce").astype("Int64")
+
+    # keep only draw_date and n1..n6
+    result = df[["draw_date","n1","n2","n3","n4","n5","n6"]].copy()
+    return result
+
+def fetch_all_sources(urls, limit=120):
+    """Fetch multiple URLs and merge results. Return latest `limit` rows."""
+    out = pd.DataFrame()
+    for url in urls:
+        print(f"🔹 Fetching {url} ...")
+        html = fetch_html(url)
+        df = parse_table(html, url)
+        print(f"✔ Fetched {len(df)} rows from {url}")
+        if not df.empty:
+            out = pd.concat([out, df], ignore_index=True)
+    if out.empty:
+        print("⚠ Không có dữ liệu hợp lệ từ các nguồn.")
+        return out
+    out = out.drop_duplicates(subset=["draw_date","n1","n2","n3","n4","n5","n6"])
+    out = out.sort_values(by="draw_date", ascending=False).reset_index(drop=True)
+    return out.head(limit)
