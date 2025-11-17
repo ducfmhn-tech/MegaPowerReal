@@ -1,14 +1,3 @@
-"""
-fetch_data.py — FINAL VERSION (NO SELENIUM)
-- Multi-source fetch for Mega 6/45 & Power 6/55
-- Sources:
-    1. ketquadientoan.com
-    2. minhngoc.net.vn
-    3. lotto-8.com (HTML table)
-- Auto-clean, auto-sort, auto-normalize
-- Always returns 100–300 rows per lottery
-"""
-
 import os
 import re
 import time
@@ -19,280 +8,299 @@ from datetime import datetime
 from utils.logger import log
 
 HEADERS = {"User-Agent": "Mozilla/5.0"}
+MEGA_MAX = 45
+POWER_MAX = 55
 
-# ===========================
-# Helpers
-# ===========================
+URLS = {
+    "mega": [
+        "https://www.ketquadientoan.com/tat-ca-ky-xo-so-mega-6-45.html",
+        "https://www.minhngoc.net.vn/ket-qua-xo-so/dien-toan-vietlott/mega-6x45.html",
+        "https://www.lotto-8.com/Vietnam/listltoVM45.asp",
+    ],
+    "power": [
+        "https://www.ketquadientoan.com/tat-ca-ky-xo-so-power-655.html",
+        "https://www.minhngoc.net.vn/ket-qua-xo-so/dien-toan-vietlott/power-6x55.html",
+        "https://www.lotto-8.com/Vietnam/listltoVM55.asp",
+    ]
+}
 
-def normalize_date(text):
-    if not isinstance(text, str):
-        return None
-    text = text.strip()
-    text = re.sub(r"^\D{1,10},\s*", "", text)
-    for fmt in ("%d/%m/%Y", "%Y-%m-%d", "%d-%m-%Y"):
-        try:
-            return datetime.strptime(text, fmt).strftime("%Y-%m-%d")
-        except:
-            pass
+# ------------------------------
+# Helper - fetch HTML
+# ------------------------------
+def fetch_html(url):
     try:
-        return pd.to_datetime(text, dayfirst=True).strftime("%Y-%m-%d")
+        r = requests.get(url, headers=HEADERS, timeout=20)
+        r.raise_for_status()
+        return r.text
+    except Exception as e:
+        log(f"[fetch_html] ERROR {url}: {e}")
+        return None
+
+# ------------------------------
+# Helper - extract date
+# ------------------------------
+def extract_date(text):
+    if not text:
+        return None
+    match = re.search(r"(\d{1,2}/\d{1,2}/\d{4})", text)
+    if not match:
+        return None
+    try:
+        return datetime.strptime(match.group(1), "%d/%m/%Y").strftime("%Y-%m-%d")
     except:
         return None
 
-
-def fetch_html(url, retry=3):
-    for i in range(retry):
-        try:
-            r = requests.get(url, headers=HEADERS, timeout=20)
-            r.raise_for_status()
-            log(f"✔ Fetched HTML OK: {url}")
-            return r.text
-        except Exception as e:
-            log(f"[Retry {i+1}/{retry}] fetch error {url}: {e}")
-            time.sleep(2)
-    return None
-
-# ===========================
-# Mega 6/45 Parsers
-# ===========================
-
+# ==========================================================
+#  PARSER 1 – KETQUADIEN TOAN (Mega)
+# ==========================================================
 def parse_mega_ketqua(html):
-    dfs = pd.read_html(html, flavor="lxml")
-    out = []
+    soup = BeautifulSoup(html, "html.parser")
+    rows = soup.select(".result-list.mega .result-row")
+    data = []
 
-    for df in dfs:
-        df = df.copy()
-        df.columns = [str(x).lower() for x in df.columns]
+    for row in rows:
+        date_text = row.select_one(".draw-date")
+        nums = row.select(".ball-mega")
 
-        # detect date col
-        date_col = None
-        for c in df.columns:
-            if df[c].astype(str).str.contains(r"\d{2}/\d{2}/\d{4}", na=False).any():
-                date_col = c
-                break
-        if not date_col:
+        if not date_text:
+            continue
+        if len(nums) < 6:
             continue
 
-        # detect merged numbers col
-        num_col = None
-        for c in df.columns:
-            if df[c].astype(str).str.contains(r"(\d+[, ]+){5}\d+", na=False).any():
-                num_col = c
-                break
-        if not num_col:
+        date = extract_date(date_text.get_text(strip=True))
+        if not date:
             continue
 
-        for idx, row in df.iterrows():
-            date = normalize_date(str(row[date_col]))
-            nums = re.findall(r"\d+", str(row[num_col]))
-            if len(nums) >= 6:
-                nums = sorted(list(map(int, nums[:6])))
-                out.append([date] + nums)
+        numbers = [int(n.get_text(strip=True)) for n in nums[:6]]
+        numbers = sorted(numbers)
 
-    if not out:
-        return pd.DataFrame()
+        data.append({
+            "date": date,
+            "n1": numbers[0],
+            "n2": numbers[1],
+            "n3": numbers[2],
+            "n4": numbers[3],
+            "n5": numbers[4],
+            "n6": numbers[5],
+            "source": "ketquadientoan"
+        })
 
-    df = pd.DataFrame(out, columns=["date"] + [f"n{i}" for i in range(1, 7)])
-    df.dropna(subset=["date"], inplace=True)
-    df.drop_duplicates(inplace=True)
-    df.sort_values("date", ascending=False, inplace=True)
-    return df
+    return pd.DataFrame(data)
 
-
-def parse_mega_minhngoc(html):
-    soup = BeautifulSoup(html, "lxml")
-    table = soup.find("table", {"id": "kq"})
-    if not table:
-        return pd.DataFrame()
-
-    rows = table.find_all("tr")
-    out = []
-
-    for tr in rows:
-        cols = [td.get_text(strip=True) for td in tr.find_all("td")]
-        if len(cols) < 7:
-            continue
-
-        date = normalize_date(cols[0])
-        nums = re.findall(r"\d+", " ".join(cols[1:7]))
-
-        if len(nums) >= 6:
-            nums = sorted(list(map(int, nums[:6])))
-            out.append([date] + nums)
-
-    df = pd.DataFrame(out, columns=["date"] + [f"n{i}" for i in range(1, 7)])
-    df.dropna(inplace=True)
-    df.drop_duplicates(inplace=True)
-    df.sort_values("date", ascending=False, inplace=True)
-    return df
-
-
-def parse_mega_lotto(html):
-    soup = BeautifulSoup(html, "lxml")
-    rows = soup.select("table tr")
-    out = []
-
-    for tr in rows:
-        cols = [c.get_text(strip=True) for c in tr.find_all("td")]
-        if len(cols) < 7:
-            continue
-
-        date = normalize_date(cols[0])
-        nums = re.findall(r"\d+", " ".join(cols[1:7]))
-
-        if len(nums) >= 6:
-            nums = sorted(list(map(int, nums[:6])))
-            out.append([date] + nums)
-
-    df = pd.DataFrame(out, columns=["date"] + [f"n{i}" for i in range(1, 7)])
-    df.dropna(inplace=True)
-    df.drop_duplicates(inplace=True)
-    df.sort_values("date", ascending=False, inplace=True)
-    return df
-
-
-# ===========================
-# Power 6/55 Parsers
-# ===========================
-
+# ==========================================================
+#  PARSER 2 – KETQUADIEN TOAN (Power)
+# ==========================================================
 def parse_power_ketqua(html):
-    dfs = pd.read_html(html, flavor="lxml")
-    out = []
+    soup = BeautifulSoup(html, "html.parser")
+    rows = soup.select(".result-list.power .result-row")
+    data = []
 
-    for df in dfs:
-        df = df.copy()
-        df.columns = [str(c).lower() for c in df.columns]
+    for row in rows:
+        date_text = row.select_one(".draw-date")
+        nums = row.select(".ball-power")
+        bonus = row.select_one(".ball-bonus")
 
-        date_col = None
-        for c in df.columns:
-            if df[c].astype(str).str.contains(r"\d{2}/\d{2}/\d{4}", na=False).any():
-                date_col = c
-                break
-        if not date_col:
+        if not date_text:
+            continue
+        if len(nums) < 6:
+            continue
+        date = extract_date(date_text.get_text(strip=True))
+        if not date:
             continue
 
-        # any column with 6 numbers
-        num_col = None
-        for c in df.columns:
-            if df[c].astype(str).str.contains(r"(\d+[, ]+){5}\d+", na=False).any():
-                num_col = c
-                break
-        if not num_col:
-            continue
+        numbers = [int(n.get_text(strip=True)) for n in nums[:6]]
+        numbers = sorted(numbers)
+        bonus_val = int(bonus.get_text(strip=True)) if bonus else None
 
-        for _, row in df.iterrows():
-            date = normalize_date(str(row[date_col]))
-            nums = re.findall(r"\d+", str(row[num_col]))
-            if len(nums) >= 6:
-                nums = sorted(list(map(int, nums[:6])))
-                out.append([date] + nums)
+        data.append({
+            "date": date,
+            "n1": numbers[0],
+            "n2": numbers[1],
+            "n3": numbers[2],
+            "n4": numbers[3],
+            "n5": numbers[4],
+            "n6": numbers[5],
+            "bonus": bonus_val,
+            "source": "ketquadientoan"
+        })
 
-    if not out:
+    return pd.DataFrame(data)
+
+# ==========================================================
+#  PARSER 3 – MINH NGOC (Mega + Power)
+# ==========================================================
+def parse_minhngoc(html, max_val):
+    try:
+        dfs = pd.read_html(html)
+    except:
         return pd.DataFrame()
 
-    df = pd.DataFrame(out, columns=["date"] + [f"n{i}" for i in range(1, 7)])
-    df.dropna(inplace=True)
-    df.drop_duplicates(inplace=True)
-    df.sort_values("date", ascending=False, inplace=True)
-    return df
+    df = dfs[0]
+    df.columns = [str(c).strip().lower() for c in df.columns]
 
+    date_col = None
+    for c in df.columns:
+        if df[c].astype(str).str.contains(r"\d{4}-\d{2}-\d{2}", na=False).any():
+            date_col = c
+            break
 
-def parse_power_minhngoc(html):
-    soup = BeautifulSoup(html, "lxml")
-    table = soup.find("table", {"id": "kq"})
-    if not table:
+    if not date_col:
         return pd.DataFrame()
 
-    rows = table.find_all("tr")
-    out = []
+    num_cols = [c for c in df.columns if c.startswith("n")]
+    if len(num_cols) < 6:
+        return pd.DataFrame()
 
-    for tr in rows:
-        cols = [td.get_text(strip=True) for td in tr.find_all("td")]
-        if len(cols) < 7:
+    data = []
+
+    for _, row in df.iterrows():
+        date = str(row[date_col]).strip()
+        try:
+            d2 = datetime.strptime(date, "%Y-%m-%d").strftime("%Y-%m-%d")
+        except:
             continue
 
-        date = normalize_date(cols[0])
-        nums = re.findall(r"\d+", " ".join(cols[1:7]))
-        if len(nums) >= 6:
-            nums = sorted(list(map(int, nums[:6])))
-            out.append([date] + nums)
+        nums = []
+        ok = True
 
-    df = pd.DataFrame(out, columns=["date"] + [f"n{i}" for i in range(1, 7)])
-    df.dropna(inplace=True)
-    df.drop_duplicates(inplace=True)
-    df.sort_values("date", ascending=False, inplace=True)
-    return df
+        for i in range(1, 7):
+            val = row.get(f"n{i}")
+            try:
+                val = int(val)
+                if 1 <= val <= max_val:
+                    nums.append(val)
+                else:
+                    ok = False
+            except:
+                ok = False
 
-
-def parse_power_lotto(html):
-    soup = BeautifulSoup(html, "lxml")
-    rows = soup.select("table tr")
-    out = []
-
-    for tr in rows:
-        cols = [c.get_text(strip=True) for c in tr.find_all("td")]
-        if len(cols) < 7:
+        if not ok or len(nums) < 6:
             continue
 
-        date = normalize_date(cols[0])
-        nums = re.findall(r"\d+", " ".join(cols[1:7]))
+        nums = sorted(nums)
 
-        if len(nums) >= 6:
-            nums = sorted(list(map(int, nums[:6])))
-            out.append([date] + nums)
+        data.append({
+            "date": d2,
+            "n1": nums[0],
+            "n2": nums[1],
+            "n3": nums[2],
+            "n4": nums[3],
+            "n5": nums[4],
+            "n6": nums[5],
+            "source": "minhngoc"
+        })
 
-    df = pd.DataFrame(out, columns=["date"] + [f"n{i}" for i in range(1, 7)])
-    df.dropna(inplace=True)
-    df.drop_duplicates(inplace=True)
+    return pd.DataFrame(data)
+
+# ==========================================================
+#  PARSER 4 – LOTTO-8 (Mega + Power)
+# ==========================================================
+def parse_lotto(html):
+    try:
+        dfs = pd.read_html(html)
+        df = dfs[0]
+    except:
+        return pd.DataFrame()
+
+    df.columns = [str(c).strip().lower() for c in df.columns]
+
+    if "date" not in df.columns:
+        return pd.DataFrame()
+
+    if not any(col.startswith("no") or col.startswith("n1") for col in df.columns):
+        return pd.DataFrame()
+
+    num_cols = [c for c in df.columns if c.startswith("n")]
+    if len(num_cols) < 6:
+        return pd.DataFrame()
+
+    data = []
+
+    for _, row in df.iterrows():
+        date = row["date"]
+        try:
+            date = datetime.strptime(date, "%Y/%m/%d").strftime("%Y-%m-%d")
+        except:
+            continue
+
+        nums = []
+        for i in range(1, 7):
+            try:
+                nums.append(int(row[f"n{i}"]))
+            except:
+                nums = []
+                break
+
+        if len(nums) < 6:
+            continue
+
+        nums = sorted(nums)
+        data.append({
+            "date": date,
+            "n1": nums[0], "n2": nums[1], "n3": nums[2],
+            "n4": nums[3], "n5": nums[4], "n6": nums[5],
+            "source": "lotto8"
+        })
+
+    return pd.DataFrame(data)
+
+# ==========================================================
+#  MERGE SOURCE
+# ==========================================================
+def merge_sources(dfs):
+    dfs = [d for d in dfs if d is not None and not d.empty]
+    if not dfs:
+        return pd.DataFrame()
+
+    df = pd.concat(dfs, ignore_index=True)
+    df.drop_duplicates(subset=["date", "n1", "n2", "n3", "n4", "n5", "n6"], inplace=True)
     df.sort_values("date", ascending=False, inplace=True)
+    df.reset_index(drop=True, inplace=True)
     return df
 
-
-# ===========================
-# PUBLIC: multi-source fetch
-# ===========================
-
-MEGA_SOURCES = [
-    ("ketqua", "https://www.ketquadientoan.com/tat-ca-ky-xo-so-mega-6-45.html", parse_mega_ketqua),
-    ("minhngoc", "https://www.minhngoc.net.vn/ket-qua-xo-so/dien-toan-vietlott/mega-6x45.html", parse_mega_minhngoc),
-    ("lotto", "https://www.lotto-8.com/Vietnam/listltoVM45.asp", parse_mega_lotto),
-]
-
-POWER_SOURCES = [
-    ("ketqua", "https://www.ketquadientoan.com/tat-ca-ky-xo-so-power-655.html", parse_power_ketqua),
-    ("minhngoc", "https://www.minhngoc.net.vn/ket-qua-xo-so/dien-toan-vietlott/power-6x55.html", parse_power_minhngoc),
-    ("lotto", "https://www.lotto-8.com/Vietnam/listltoVM55.asp", parse_power_lotto),
-]
-
-
-def fetch_all_data(limit=150, save_dir="data"):
+# ==========================================================
+#  PUBLIC API
+# ==========================================================
+def fetch_all_data(limit=120, save_dir="data"):
     os.makedirs(save_dir, exist_ok=True)
 
-    def fetch_multi(sources):
-        dfs = []
-        for name, url, parser in sources:
-            log(f"🔹 Fetching from {name}: {url}")
-            html = fetch_html(url)
-            if html:
-                df = parser(html)
-                if not df.empty:
-                    dfs.append(df)
-        if not dfs:
-            return pd.DataFrame()
-        df_all = pd.concat(dfs, ignore_index=True)
-        df_all.drop_duplicates(subset=["date"], inplace=True)
-        df_all.sort_values("date", ascending=False, inplace=True)
-        return df_all.head(limit).reset_index(drop=True)
+    # === MEGA ===
+    mega_dfs = []
+    for url in URLS["mega"]:
+        log(f"🔹 Fetching Mega: {url}")
+        html = fetch_html(url)
+        if not html:
+            continue
 
-    mega_df  = fetch_multi(MEGA_SOURCES)
-    power_df = fetch_multi(POWER_SOURCES)
+        if "ketquadientoan" in url:
+            mega_dfs.append(parse_mega_ketqua(html))
+        elif "minhngoc" in url:
+            mega_dfs.append(parse_minhngoc(html, MEGA_MAX))
+        else:
+            mega_dfs.append(parse_lotto(html))
 
-    mega_df.to_csv(os.path.join(save_dir, "mega_6_45_raw.csv"), index=False)
-    power_df.to_csv(os.path.join(save_dir, "power_6_55_raw.csv"), index=False)
+    mega_df = merge_sources(mega_dfs).head(limit)
+
+    # === POWER ===
+    power_dfs = []
+    for url in URLS["power"]:
+        log(f"🔹 Fetching Power: {url}")
+        html = fetch_html(url)
+        if not html:
+            continue
+
+        if "ketquadientoan" in url:
+            power_dfs.append(parse_power_ketqua(html))
+        elif "minhngoc" in url:
+            power_dfs.append(parse_minhngoc(html, POWER_MAX))
+        else:
+            power_dfs.append(parse_lotto(html))
+
+    power_df = merge_sources(power_dfs).head(limit)
+
+    # SAVE
+    mega_df.to_csv(f"{save_dir}/mega_6_45_raw.csv", index=False)
+    power_df.to_csv(f"{save_dir}/power_6_55_raw.csv", index=False)
 
     log(f"✅ Fetched Mega: {len(mega_df)} rows, Power: {len(power_df)} rows")
-
     return mega_df, power_df
-
-
-__all__ = ["fetch_all_data"]
