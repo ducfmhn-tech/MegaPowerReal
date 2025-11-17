@@ -8,6 +8,18 @@ HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
 }
 
+def normalize_columns(df):
+    """Chuẩn hóa tên cột để không lỗi khi là MultiIndex."""
+    if isinstance(df.columns, pd.MultiIndex):
+        # flatten MultiIndex -> "col1_col2"
+        df.columns = [
+            "_".join([str(c).strip() for c in col if str(c).strip() != ""])
+            for col in df.columns
+        ]
+    else:
+        df.columns = [str(c).strip() for c in df.columns]
+    return df
+
 def fetch_html(url, timeout_sec=30, retries=3, wait=1):
     """Fetch HTML with retry. Return text or None."""
     for attempt in range(1, retries + 1):
@@ -43,8 +55,8 @@ def parse_table(html, url):
         return pd.DataFrame()
 
     df = df.copy()
-    df.columns = df.columns.astype(str)
-
+    df = normalize_columns(df)
+    
     # Heuristic to find date column
     date_col = None
     for c in df.columns:
