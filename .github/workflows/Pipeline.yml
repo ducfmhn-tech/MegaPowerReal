@@ -1,4 +1,4 @@
-name: CI/CD Pipeline cho MegaPowerReal
+name: CI/CD Pipeline cho MegaPowerReal (Python Only)
 
 on:
   push:
@@ -9,14 +9,11 @@ on:
 
 jobs:
   ##############################
-  # JOB 1: BUILD & TEST
+  # JOB 1: BUILD & TEST (Python)
   ##############################
   build-and-test:
-    name: Build và Test (Node.js & Python)
+    name: Build và Test (Python)
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        node-version: [20.x]
 
     steps:
       - name: Checkout mã nguồn
@@ -33,28 +30,14 @@ jobs:
       - name: Kiểm tra các thư viện Python đã cài
         run: pip list
 
-      - name: Thiết lập Node.js ${{ matrix.node-version }}
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ matrix.node-version }}
-          cache: 'npm'
-
-      - name: Cài đặt dependencies và Build Node.js
-        run: |
-          npm install
-          npm run build --if-present
-
-      - name: Chạy Pipeline Dự đoán Dữ liệu (Python)
+      - name: Chạy Pipeline Dự đoán Dữ liệu (main.py)
         run: python main.py
-
-      - name: Chạy Unit Tests Node.js
-        run: npm test
 
       - name: Tải Artifact Build
         uses: actions/upload-artifact@v4
         with:
-          name: build-artifact
-          path: dist
+          name: python-artifact
+          path: ./
           retention-days: 1
 
   ##############################
@@ -73,7 +56,7 @@ jobs:
       - name: Tải Artifact Build
         uses: actions/download-artifact@v4
         with:
-          name: build-artifact
+          name: python-artifact
           path: ./dist
 
       - name: Triển khai Staging
@@ -97,7 +80,7 @@ jobs:
       - name: Tải Artifact Build
         uses: actions/download-artifact@v4
         with:
-          name: build-artifact
+          name: python-artifact
           path: ./dist
 
       - name: Chờ phê duyệt thủ công
