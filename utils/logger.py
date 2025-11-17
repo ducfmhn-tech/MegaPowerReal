@@ -1,5 +1,6 @@
 # utils/logger.py
-from datetime import datetime
-
+import datetime,sys
 def log(msg):
-    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}")
+    t = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"[{t}] {msg}")
+    sys.stdout.flush()
