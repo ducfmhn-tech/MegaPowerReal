@@ -1,0 +1,77 @@
+# .github/workflows/ml_pipeline.yml
+name: MegaPower ML Pipeline (train + optional TF)
+
+on:
+  workflow_dispatch:
+    inputs:
+      tf_train:
+        description: 'Set to "true" to run TensorFlow training (long).'
+        required: false
+        default: 'false'
+  push:
+    branches: ["main"]
+
+jobs:
+  build-and-train:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libxml2-dev libxslt1-dev
+
+      - name: Install Python deps (core)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run fetch + report
+        run: python main.py
+        env:
+          EMAIL_USER: ${{ secrets.SENDER_EMAIL }}
+          EMAIL_PASS: ${{ secrets.SENDER_PASSWORD }}
+          EMAIL_TO:   ${{ secrets.RECEIVER_EMAIL }}
+          EMAIL_HOST: smtp.gmail.com
+          EMAIL_PORT: 465
+
+      - name: Train classical models (LGB/Cat/MLP)
+        run: python train_and_save_models.py
+
+      - name: Conditional TensorFlow training
+        if: ${{ github.event.inputs.tf_train == 'true' }}
+        run: |
+          echo "TF training enabled — installing tensorflow (may take long)..."
+          pip install tensorflow
+          python train_tf_model.py
+
+      - name: Upload reports artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mega-reports
+          path: reports/*.xlsx
+          retention-days: 7
+
+      - name: Upload models artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: megapower-models
+          path: |
+            models/*.joblib
+            models/*.npy
+            models/*.h5
+          retention-days: 7
+
+      - name: Upload metrics artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: megapower-metrics
+          path: metrics/*.csv
+          retention-days: 7
