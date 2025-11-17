@@ -1,4 +1,4 @@
-name: CI/CD Pipeline MegaPowerReal (Python + Email)
+name: MegaPowerReal Python Pipeline
 
 on:
   push:
@@ -6,9 +6,8 @@ on:
   workflow_dispatch:
 
 jobs:
-  build-and-run:
+  run-pipeline:
     runs-on: ubuntu-latest
-
     env:
       EMAIL_HOST: ${{ secrets.EMAIL_HOST }}
       EMAIL_PORT: ${{ secrets.EMAIL_PORT }}
@@ -19,10 +18,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Python 3.10
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: 3.10
 
       - name: Cache pip
         uses: actions/cache@v3
@@ -35,10 +34,10 @@ jobs:
       - name: Install dependencies
         run: pip install --upgrade pip && pip install -r requirements.txt
 
-      - name: Run Python pipeline
+      - name: Run pipeline
         run: python main.py
 
-      - name: Upload report artifact
+      - name: Upload report
         uses: actions/upload-artifact@v4
         with:
           name: mega_power_report
