@@ -1,306 +1,230 @@
-import os
-import re
-import time
 import requests
 import pandas as pd
 from bs4 import BeautifulSoup
 from datetime import datetime
-from utils.logger import log
+from io import StringIO
 
-HEADERS = {"User-Agent": "Mozilla/5.0"}
-MEGA_MAX = 45
-POWER_MAX = 55
+# --------------------------
+# UTILS
+# --------------------------
+def get_html(url, timeout=10):
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+    }
+    r = requests.get(url, headers=headers, timeout=timeout)
+    r.raise_for_status()
+    return r.text
 
-URLS = {
-    "mega": [
-        "https://www.ketquadientoan.com/tat-ca-ky-xo-so-mega-6-45.html",
-        "https://www.minhngoc.net.vn/ket-qua-xo-so/dien-toan-vietlott/mega-6x45.html",
-        "https://www.lotto-8.com/Vietnam/listltoVM45.asp",
-    ],
-    "power": [
-        "https://www.ketquadientoan.com/tat-ca-ky-xo-so-power-655.html",
-        "https://www.minhngoc.net.vn/ket-qua-xo-so/dien-toan-vietlott/power-6x55.html",
-        "https://www.lotto-8.com/Vietnam/listltoVM55.asp",
-    ]
-}
 
-# ------------------------------
-# Helper - fetch HTML
-# ------------------------------
-def fetch_html(url):
-    try:
-        r = requests.get(url, headers=HEADERS, timeout=20)
-        r.raise_for_status()
-        return r.text
-    except Exception as e:
-        log(f"[fetch_html] ERROR {url}: {e}")
-        return None
+# ============================================================
+# 1. PARSER Mega / Power CHUẨN CHO KETQUADIENTOAN.COM
+# ============================================================
 
-# ------------------------------
-# Helper - extract date
-# ------------------------------
-def extract_date(text):
-    if not text:
-        return None
-    match = re.search(r"(\d{1,2}/\d{1,2}/\d{4})", text)
-    if not match:
-        return None
-    try:
-        return datetime.strptime(match.group(1), "%d/%m/%Y").strftime("%Y-%m-%d")
-    except:
-        return None
+def parse_ketquadt_mega(html):
+    """
+    HTML mẫu:
+        <div class="result-list mega">
+            <div class="result-row"> ... <span class="ball-mega">03</span> ...
+    """
+    soup = BeautifulSoup(html, "lxml")
+    rows = []
 
-# ==========================================================
-#  PARSER 1 – KETQUADIEN TOAN (Mega)
-# ==========================================================
-def parse_mega_ketqua(html):
-    soup = BeautifulSoup(html, "html.parser")
-    rows = soup.select(".result-list.mega .result-row")
-    data = []
+    for row in soup.select(".result-list.mega .result-row"):
+        date_el = row.select_one(".draw-date")
+        balls = row.select(".ball-mega")
 
-    for row in rows:
-        date_text = row.select_one(".draw-date")
-        nums = row.select(".ball-mega")
-
-        if not date_text:
-            continue
-        if len(nums) < 6:
+        if not date_el or len(balls) != 6:
             continue
 
-        date = extract_date(date_text.get_text(strip=True))
-        if not date:
-            continue
+        date_text = date_el.get_text(strip=True)
+        nums = [int(b.get_text(strip=True)) for b in balls]
 
-        numbers = [int(n.get_text(strip=True)) for n in nums[:6]]
-        numbers = sorted(numbers)
-
-        data.append({
-            "date": date,
-            "n1": numbers[0],
-            "n2": numbers[1],
-            "n3": numbers[2],
-            "n4": numbers[3],
-            "n5": numbers[4],
-            "n6": numbers[5],
-            "source": "ketquadientoan"
-        })
-
-    return pd.DataFrame(data)
-
-# ==========================================================
-#  PARSER 2 – KETQUADIEN TOAN (Power)
-# ==========================================================
-def parse_power_ketqua(html):
-    soup = BeautifulSoup(html, "html.parser")
-    rows = soup.select(".result-list.power .result-row")
-    data = []
-
-    for row in rows:
-        date_text = row.select_one(".draw-date")
-        nums = row.select(".ball-power")
-        bonus = row.select_one(".ball-bonus")
-
-        if not date_text:
-            continue
-        if len(nums) < 6:
-            continue
-        date = extract_date(date_text.get_text(strip=True))
-        if not date:
-            continue
-
-        numbers = [int(n.get_text(strip=True)) for n in nums[:6]]
-        numbers = sorted(numbers)
-        bonus_val = int(bonus.get_text(strip=True)) if bonus else None
-
-        data.append({
-            "date": date,
-            "n1": numbers[0],
-            "n2": numbers[1],
-            "n3": numbers[2],
-            "n4": numbers[3],
-            "n5": numbers[4],
-            "n6": numbers[5],
-            "bonus": bonus_val,
-            "source": "ketquadientoan"
-        })
-
-    return pd.DataFrame(data)
-
-# ==========================================================
-#  PARSER 3 – MINH NGOC (Mega + Power)
-# ==========================================================
-def parse_minhngoc(html, max_val):
-    try:
-        dfs = pd.read_html(html)
-    except:
-        return pd.DataFrame()
-
-    df = dfs[0]
-    df.columns = [str(c).strip().lower() for c in df.columns]
-
-    date_col = None
-    for c in df.columns:
-        if df[c].astype(str).str.contains(r"\d{4}-\d{2}-\d{2}", na=False).any():
-            date_col = c
-            break
-
-    if not date_col:
-        return pd.DataFrame()
-
-    num_cols = [c for c in df.columns if c.startswith("n")]
-    if len(num_cols) < 6:
-        return pd.DataFrame()
-
-    data = []
-
-    for _, row in df.iterrows():
-        date = str(row[date_col]).strip()
-        try:
-            d2 = datetime.strptime(date, "%Y-%m-%d").strftime("%Y-%m-%d")
-        except:
-            continue
-
-        nums = []
-        ok = True
-
-        for i in range(1, 7):
-            val = row.get(f"n{i}")
-            try:
-                val = int(val)
-                if 1 <= val <= max_val:
-                    nums.append(val)
-                else:
-                    ok = False
-            except:
-                ok = False
-
-        if not ok or len(nums) < 6:
-            continue
-
-        nums = sorted(nums)
-
-        data.append({
-            "date": d2,
+        rows.append({
+            "date": date_text,
             "n1": nums[0],
             "n2": nums[1],
             "n3": nums[2],
             "n4": nums[3],
             "n5": nums[4],
             "n6": nums[5],
-            "source": "minhngoc"
         })
 
-    return pd.DataFrame(data)
+    return rows
 
-# ==========================================================
-#  PARSER 4 – LOTTO-8 (Mega + Power)
-# ==========================================================
-def parse_lotto(html):
+
+def parse_ketquadt_power(html):
+    """
+    HTML mẫu:
+        <div class="result-list power">
+            <span class="ball-power">05</span> ... <span class="ball-bonus">55</span>
+    """
+    soup = BeautifulSoup(html, "lxml")
+    rows = []
+
+    for row in soup.select(".result-list.power .result-row"):
+        date_el = row.select_one(".draw-date")
+        balls = row.select(".ball-power")
+        bonus = row.select_one(".ball-bonus")
+
+        if not date_el or len(balls) != 6 or not bonus:
+            continue
+
+        date_text = date_el.get_text(strip=True)
+        nums = [int(b.get_text(strip=True)) for b in balls]
+        bonus_num = int(bonus.get_text(strip=True))
+
+        rows.append({
+            "date": date_text,
+            "n1": nums[0],
+            "n2": nums[1],
+            "n3": nums[2],
+            "n4": nums[3],
+            "n5": nums[4],
+            "n6": nums[5],
+            "bonus": bonus_num,
+        })
+
+    return rows
+
+
+# ============================================================
+# 2. PARSER CHO MINHNGOC.NET.VN (CÓ TABLE)
+# ============================================================
+
+def parse_minhngoc(html, mega=True):
+    """
+    Dùng read_html vì minhngoc có table chuẩn.
+    """
     try:
-        dfs = pd.read_html(html)
-        df = dfs[0]
+        tables = pd.read_html(StringIO(html))
     except:
-        return pd.DataFrame()
+        return []
 
-    df.columns = [str(c).strip().lower() for c in df.columns]
+    if not tables:
+        return []
 
-    if "date" not in df.columns:
-        return pd.DataFrame()
+    df = tables[0]
 
-    if not any(col.startswith("no") or col.startswith("n1") for col in df.columns):
-        return pd.DataFrame()
+    # Mega
+    if mega and df.shape[1] >= 8:
+        df.columns = ["ki", "ngay", "n1", "n2", "n3", "n4", "n5", "n6"]
+        df = df.dropna()
+        df["date"] = df["ngay"]
+        return df[["date", "n1", "n2", "n3", "n4", "n5", "n6"]].to_dict("records")
 
-    num_cols = [c for c in df.columns if c.startswith("n")]
-    if len(num_cols) < 6:
-        return pd.DataFrame()
+    # Power
+    if not mega and df.shape[1] >= 9:
+        df.columns = ["ki", "ngay", "n1", "n2", "n3", "n4", "n5", "n6", "bonus"]
+        df = df.dropna()
+        df["date"] = df["ngay"]
+        return df[["date", "n1", "n2", "n3", "n4", "n5", "n6", "bonus"]].to_dict("records")
 
-    data = []
+    return []
 
-    for _, row in df.iterrows():
-        date = row["date"]
+
+# ============================================================
+# 3. PARSER CHO LOTTO-8.COM (TABLE CỔ)
+# ============================================================
+
+def parse_lotto(html, mega=True):
+    soup = BeautifulSoup(html, "lxml")
+    table = soup.find("table")
+
+    if not table:
+        return []
+
+    rows = []
+    for tr in table.find_all("tr")[1:]:
+        tds = tr.find_all("td")
+        if mega and len(tds) >= 8:
+            rows.append({
+                "date": tds[1].get_text(strip=True),
+                "n1": int(tds[2].get_text()),
+                "n2": int(tds[3].get_text()),
+                "n3": int(tds[4].get_text()),
+                "n4": int(tds[5].get_text()),
+                "n5": int(tds[6].get_text()),
+                "n6": int(tds[7].get_text()),
+            })
+        if not mega and len(tds) >= 9:
+            rows.append({
+                "date": tds[1].get_text(strip=True),
+                "n1": int(tds[2].get_text()),
+                "n2": int(tds[3].get_text()),
+                "n3": int(tds[4].get_text()),
+                "n4": int(tds[5].get_text()),
+                "n5": int(tds[6].get_text()),
+                "n6": int(tds[7].get_text()),
+                "bonus": int(tds[8].get_text()),
+            })
+
+    return rows
+
+
+# ============================================================
+# 4. HÀM LẤY DỮ LIỆU CHÍNH
+# ============================================================
+
+def fetch_all_mega():
+    urls = {
+        "ketquadientoan": "https://www.ketquadientoan.com/tat-ca-ky-xo-so-mega-6-45.html",
+        "minhngoc": "https://www.minhngoc.net.vn/ket-qua-xo-so/dien-toan-vietlott/mega-6x45.html",
+        "lotto8": "https://www.lotto-8.com/Vietnam/listltoVM45.asp",
+    }
+
+    all_rows = []
+
+    for name, url in urls.items():
         try:
-            date = datetime.strptime(date, "%Y/%m/%d").strftime("%Y-%m-%d")
-        except:
-            continue
+            html = get_html(url)
+            if name == "ketquadientoan":
+                rows = parse_ketquadt_mega(html)
+            elif name == "minhngoc":
+                rows = parse_minhngoc(html, mega=True)
+            else:
+                rows = parse_lotto(html, mega=True)
 
-        nums = []
-        for i in range(1, 7):
-            try:
-                nums.append(int(row[f"n{i}"]))
-            except:
-                nums = []
-                break
+            all_rows.extend(rows)
 
-        if len(nums) < 6:
-            continue
+        except Exception as e:
+            print(f"[!] Failed: {name} | {e}")
 
-        nums = sorted(nums)
-        data.append({
-            "date": date,
-            "n1": nums[0], "n2": nums[1], "n3": nums[2],
-            "n4": nums[3], "n5": nums[4], "n6": nums[5],
-            "source": "lotto8"
-        })
-
-    return pd.DataFrame(data)
-
-# ==========================================================
-#  MERGE SOURCE
-# ==========================================================
-def merge_sources(dfs):
-    dfs = [d for d in dfs if d is not None and not d.empty]
-    if not dfs:
-        return pd.DataFrame()
-
-    df = pd.concat(dfs, ignore_index=True)
-    df.drop_duplicates(subset=["date", "n1", "n2", "n3", "n4", "n5", "n6"], inplace=True)
-    df.sort_values("date", ascending=False, inplace=True)
-    df.reset_index(drop=True, inplace=True)
+    df = pd.DataFrame(all_rows).drop_duplicates()
     return df
 
-# ==========================================================
-#  PUBLIC API
-# ==========================================================
-def fetch_all_data(limit=120, save_dir="data"):
-    os.makedirs(save_dir, exist_ok=True)
 
-    # === MEGA ===
-    mega_dfs = []
-    for url in URLS["mega"]:
-        log(f"🔹 Fetching Mega: {url}")
-        html = fetch_html(url)
-        if not html:
-            continue
+def fetch_all_power():
+    urls = {
+        "ketquadientoan": "https://www.ketquadientoan.com/tat-ca-ky-xo-so-power-655.html",
+        "minhngoc": "https://www.minhngoc.net.vn/ket-qua-xo-so/dien-toan-vietlott/power-6x55.html",
+        "lotto8": "https://www.lotto-8.com/Vietnam/listltoVM55.asp",
+    }
 
-        if "ketquadientoan" in url:
-            mega_dfs.append(parse_mega_ketqua(html))
-        elif "minhngoc" in url:
-            mega_dfs.append(parse_minhngoc(html, MEGA_MAX))
-        else:
-            mega_dfs.append(parse_lotto(html))
+    all_rows = []
+    for name, url in urls.items():
+        try:
+            html = get_html(url)
+            if name == "ketquadientoan":
+                rows = parse_ketquadt_power(html)
+            elif name == "minhngoc":
+                rows = parse_minhngoc(html, mega=False)
+            else:
+                rows = parse_lotto(html, mega=False)
 
-    mega_df = merge_sources(mega_dfs).head(limit)
+            all_rows.extend(rows)
 
-    # === POWER ===
-    power_dfs = []
-    for url in URLS["power"]:
-        log(f"🔹 Fetching Power: {url}")
-        html = fetch_html(url)
-        if not html:
-            continue
+        except Exception as e:
+            print(f"[!] Failed: {name} | {e}")
 
-        if "ketquadientoan" in url:
-            power_dfs.append(parse_power_ketqua(html))
-        elif "minhngoc" in url:
-            power_dfs.append(parse_minhngoc(html, POWER_MAX))
-        else:
-            power_dfs.append(parse_lotto(html))
+    df = pd.DataFrame(all_rows).drop_duplicates()
+    return df
 
-    power_df = merge_sources(power_dfs).head(limit)
 
-    # SAVE
-    mega_df.to_csv(f"{save_dir}/mega_6_45_raw.csv", index=False)
-    power_df.to_csv(f"{save_dir}/power_6_55_raw.csv", index=False)
+# ============================================================
+# MAIN CALL
+# ============================================================
 
-    log(f"✅ Fetched Mega: {len(mega_df)} rows, Power: {len(power_df)} rows")
+def fetch_mega_and_power():
+    mega_df = fetch_all_mega()
+    power_df = fetch_all_power()
     return mega_df, power_df
