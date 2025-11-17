@@ -204,3 +204,6 @@ def fetch_all_data(limit=100, save_dir="data"):
 
     log(f"✅ Fetched Mega: {len(mega_df)} rows, Power: {len(power_df)} rows")
     return mega_df, power_df
+    
+with open(f"debug_{int(time.time())}.html","w",encoding="utf8") as f:
+    f.write(html)
