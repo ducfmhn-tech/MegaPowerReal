@@ -228,3 +228,25 @@ def fetch_mega_and_power():
     mega_df = fetch_all_mega()
     power_df = fetch_all_power()
     return mega_df, power_df
+# ============================================================
+#  API tương thích ngược để không lỗi với main.py
+# ============================================================
+
+def fetch_all_data(limit=None, save_dir="data"):
+    """
+    API cũ được main.py sử dụng.
+    Giữ nguyên tên hàm để không ảnh hưởng đến pipeline.
+    """
+    try:
+        mega_df = fetch_all_mega(limit=limit)
+    except Exception as e:
+        print(f"[fetch_all_data] Mega fetch error: {e}")
+        mega_df = pd.DataFrame()
+
+    try:
+        power_df = fetch_all_power(limit=limit)
+    except Exception as e:
+        print(f"[fetch_all_data] Power fetch error: {e}")
+        power_df = pd.DataFrame()
+
+    return mega_df, power_df
