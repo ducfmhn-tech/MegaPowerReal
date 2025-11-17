@@ -1,215 +1,195 @@
-# utils/fetch_data.py
-import os, time, re
-import requests
+import os, joblib, numpy as np
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score
 import pandas as pd
-from bs4 import BeautifulSoup
-from io import StringIO
-from datetime import datetime
 from utils.logger import log
 
-HEADERS = {"User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+try:
+    from xgboost import XGBClassifier
+    HAS_XGB = True
+except ImportError:
+    HAS_XGB = False
+    log("⚠ Thư viện XGBoost không được tìm thấy. Chỉ sử dụng RandomForest.")
 
-MEGA_URLS = [
-    "https://www.ketquadientoan.com/tat-ca-ky-xo-so-mega-6-45.html",
-    "https://www.minhngoc.net.vn/ket-qua-xo-so/dien-toan-vietlott/mega-6x45.html",
-    "https://www.lotto-8.com/Vietnam/listltoVM45.asp"
-]
-POWER_URLS = [
-    "https://www.ketquadientoan.com/tat-ca-ky-xo-so-power-655.html",
-    "https://www.minhngoc.net.vn/ket-qua-xo-so/dien-toan-vietlott/power-6x55.html",
-    "https://www.lotto-8.com/Vietnam/listltoVM55.asp"
-]
-
-def get_html(url, retry=3, timeout=15):
-    for i in range(retry):
-        try:
-            r = requests.get(url, headers=HEADERS, timeout=timeout)
-            r.encoding = r.apparent_encoding or "utf-8"
-            r.raise_for_status()
-            log(f"✔ Fetched HTML OK: {url}")
-            return r.text
-        except Exception as e:
-            log(f"[Retry {i+1}/{retry}] fetch error {url}: {e}")
-            time.sleep(1)
-    return None
-
-# Normalize date: try several formats and return YYYY-MM-DD
-def normalize_date(text):
-    if not isinstance(text, str):
-        return None
-    text = text.strip()
-    # try dd/mm/YYYY
-    m = re.search(r"(\d{1,2}[/\-]\d{1,2}[/\-]\d{4})", text)
-    if m:
-        for fmt in ("%d/%m/%Y","%d-%m-%Y","%Y-%m-%d"):
-            try:
-                return datetime.strptime(m.group(1), fmt).strftime("%Y-%m-%d")
-            except:
-                pass
-    # try yyyy-mm-dd inside text
-    m2 = re.search(r"(\d{4}-\d{2}-\d{2})", text)
-    if m2:
-        return m2.group(1)
-    # fallback
-    try:
-        return pd.to_datetime(text, dayfirst=True).strftime("%Y-%m-%d")
-    except:
-        return None
-
-# Parse ketquadientoan Mega
-def parse_mega_ketquad(html):
-    soup = BeautifulSoup(html, "lxml")
-    rows = []
-    items = soup.select(".result-list.mega .result-row")
-    for it in items:
-        date_el = it.select_one(".draw-date")
-        balls = it.select(".ball-mega")
-        if not date_el or len(balls) < 6:
-            continue
-        date = normalize_date(date_el.get_text(strip=True))
-        if not date:
-            continue
-        nums = [int(b.get_text(strip=True)) for b in balls[:6]]
-        nums = sorted(nums)
-        rows.append({"date":date, "n1":nums[0],"n2":nums[1],"n3":nums[2],
-                     "n4":nums[3],"n5":nums[4],"n6":nums[5], "source":"ketquadientoan"})
-    return pd.DataFrame(rows)
-
-# Parse ketquadientoan Power
-def parse_power_ketquad(html):
-    soup = BeautifulSoup(html, "lxml")
-    rows = []
-    items = soup.select(".result-list.power .result-row")
-    for it in items:
-        date_el = it.select_one(".draw-date")
-        balls = it.select(".ball-power")
-        bonus_el = it.select_one(".ball-bonus")
-        if not date_el or len(balls) < 6:
-            continue
-        date = normalize_date(date_el.get_text(strip=True))
-        if not date:
-            continue
-        nums = [int(b.get_text(strip=True)) for b in balls[:6]]
-        nums = sorted(nums)
-        bonus = int(bonus_el.get_text(strip=True)) if bonus_el else None
-        rows.append({"date":date,"n1":nums[0],"n2":nums[1],"n3":nums[2],
-                     "n4":nums[3],"n5":nums[4],"n6":nums[5],
-                     "bonus":bonus, "source":"ketquadientoan"})
-    return pd.DataFrame(rows)
-
-# Parse table-based pages using pandas.read_html safely via StringIO
-def parse_table_html(html, mega=True):
-    try:
-        df_list = pd.read_html(StringIO(html))
-    except Exception:
-        return pd.DataFrame()
-    if not df_list:
-        return pd.DataFrame()
-    df = df_list[0]
-    # try to normalize columns heuristically
-    cols = [str(c).lower() for c in df.columns]
-    df.columns = cols
-    # look for date column and number columns
-    date_col = None
-    for c in cols:
-        if df[c].astype(str).str.contains(r"\d{4}-\d{2}-\d{2}|\d{1,2}/\d{1,2}/\d{4}", na=False).any():
-            date_col = c
-            break
-    if date_col is None and "ngay" in cols:
-        date_col = "ngay"
-    # find number columns n1..n6
-    num_cols = [c for c in cols if re.match(r"n\d", c)]
-    if len(num_cols) < 6:
-        # try fallback: assume next 6 cols are numbers
-        pass
-    rows = []
-    for _, r in df.iterrows():
-        try:
-            date_raw = str(r.get(date_col,""))
-            date = normalize_date(date_raw)
-            if not date:
-                continue
-            nums = []
-            # collect up to 6 numeric values from row
-            for v in r.values:
-                s = str(v)
-                ss = re.findall(r"\d+", s)
-                for x in ss:
-                    nums.append(int(x))
-                if len(nums) >= 6:
-                    break
-            if len(nums) < 6:
-                continue
-            nums = nums[:6]
-            nums = sorted(nums)
-            rec = {"date":date, "n1":nums[0],"n2":nums[1],"n3":nums[2],
-                  "n4":nums[3],"n5":nums[4],"n6":nums[5], "source":"table"}
-            rows.append(rec)
-        except Exception:
-            continue
-    return pd.DataFrame(rows)
-
-# Merge multiple sources
-def merge_dfs(dfs, limit=None):
-    dfs = [d for d in dfs if d is not None and not d.empty]
-    if not dfs:
-        return pd.DataFrame()
-    df = pd.concat(dfs, ignore_index=True)
-    # normalize date string
-    if "date" in df.columns:
-        df["date"] = df["date"].astype(str).apply(lambda x: normalize_date(x))
-        df = df.dropna(subset=["date"])
-    df = df.drop_duplicates(subset=["date","n1","n2","n3","n4","n5","n6"])
-    df = df.sort_values("date", ascending=False).reset_index(drop=True)
-    if limit:
-        df = df.head(limit).reset_index(drop=True)
-    return df
-
-# Public API — fetch_all_data (backward compatible)
-def fetch_all_data(limit=100, save_dir="data"):
-    os.makedirs(save_dir, exist_ok=True)
-    log("🔹 Fetching data (no selenium)...")
-
-    mega_dfs = []
-    for url in MEGA_URLS:
-        log(f"🔹 Fetching Mega: {url}")
-        html = get_html(url)
-        # SỬA LỖI TẠI ĐÂY: Bỏ qua nếu tải HTML thất bại
-        if not html:
-            log(f"⚠ Skipping Mega URL due to fetch failure: {url}")
-            continue
-            
-        if "ketquadientoan" in url:
-            mega_dfs.append(parse_mega_ketquad(html))
-        else:
-            mega_dfs.append(parse_table_html(html, mega=True))
-            
-     power_dfs = []
-     for url in POWER_URLS:
-        log(f"🔹 Fetching Power: {url}")
-        html = get_html(url)
-        # SỬA LỖI TẠI ĐÂY: Bỏ qua nếu tải HTML thất bại
-        if not html:
-            log(f"⚠ Skipping Power URL due to fetch failure: {url}")
-            continue
-            
-        if "ketquadientoan" in url:
-            power_dfs.append(parse_power_ketquad(html))
-        else:
-            power_dfs.append(parse_table_html(html, mega=False))
-
-    mega_df = merge_dfs(mega_dfs, limit=limit)
-    power_df = merge_dfs(power_dfs, limit=limit)
-
-    # Save raw copies
-    try:
-        mega_df.to_csv(os.path.join(save_dir, "mega_6_45_raw.csv"), index=False)
-        power_df.to_csv(os.path.join(save_dir, "power_6_55_raw.csv"), index=False)
-    except Exception as e:
-        log(f"⚠ Failed to save raw CSV: {e}")
-
-    log(f"✅ Fetched Mega: {len(mega_df)} rows, Power: {len(power_df)} rows")
-    return mega_df, power_df
+def build_Xy(mega_df, power_df, window=50, max_num=45):
+    """
+    Xây dựng ma trận đặc trưng (X) và nhãn (y) cho mô hình dự đoán theo số (per-number prediction).
+    X là tần suất của từng số trong window, y là 1 nếu số đó xuất hiện trong lượt quay tiếp theo.
+    """
+    # Lấy độ dài tối thiểu của 2 df
+    minlen = min(len(mega_df), len(power_df))
+    if minlen <= window:
+        log(f"    -> Không đủ dữ liệu (chỉ có {minlen} dòng) cho window={window}.")
+        return None, None
+        
+    X = []
+    y = []
     
-with open(f"debug_{int(time.time())}.html","w",encoding="utf8") as f:
-    f.write(html)
+    # Lặp qua lịch sử từ điểm bắt đầu của cửa sổ
+    for end in range(window, minlen):
+        # Lấy cửa sổ lịch sử
+        mw = mega_df.iloc[end-window:end]
+        pw = power_df.iloc[end-window:end]
+        
+        # Tính tần suất của từng số trong cửa sổ
+        m_counts = [0] * max_num  # Tần suất Mega (1-45)
+        p_counts = [0] * 55      # Tần suất Power (1-55)
+        
+        for i in range(1, 7):
+            # Tính tần suất Mega
+            if f"n{i}" in mw.columns:
+                for v in mw[f"n{i}"].dropna().astype(int).tolist():
+                    if 1 <= v <= max_num:
+                        m_counts[v-1] += 1
+            # Tính tần suất Power (full 55)
+            if f"n{i}" in pw.columns:
+                for v in pw[f"n{i}"].dropna().astype(int).tolist():
+                    if 1 <= v <= 55:
+                        p_counts[v-1] += 1
+
+        # Xây dựng ma trận X (Feature Matrix)
+        for n in range(1, max_num + 1):
+            # Tần suất Power, chỉ lấy 45 số đầu cho Mega model
+            power_count_mapped = p_counts[n-1] if n-1 < len(p_counts) else 0
+
+            feat = [
+                m_counts[n-1],                           # 1. Tần suất tuyệt đối Mega
+                power_count_mapped,                      # 2. Tần suất tuyệt đối Power (cho số n)
+                m_counts[n-1] / (window * 6),            # 3. Tần suất chuẩn hóa Mega
+                power_count_mapped / (window * 6)        # 4. Tần suất chuẩn hóa Power
+            ]
+            X.append(feat)
+
+        # Xây dựng vector y (Target Labels) - Lượt quay tiếp theo
+        try:
+            next_draw = {int(mega_df.iloc[end][f"n{i}"]) for i in range(1, 7)}
+        except Exception:
+            next_draw = set()
+
+        for n in range(1, max_num + 1):
+            # Nhãn là 1 nếu số n xuất hiện trong lượt quay tiếp theo, 0 nếu không
+            y.append(1 if n in next_draw else 0)
+            
+    return np.array(X), np.array(y)
+
+def train_models_and_save(mega_df, power_df, window=50, save_dir="models"):
+    """
+    Huấn luyện Random Forest và (nếu có) XGBoost, sau đó lưu mô hình và trả về metrics.
+    """
+    log("    -> Xây dựng X và y...")
+    X, y = build_Xy(mega_df, power_df, window=window)
+    
+    if X is None or y is None or len(X) == 0:
+        log("❌ Dữ liệu không đủ hoặc có lỗi khi xây dựng X/y.")
+        return None, None, {}
+        
+    log(f"    -> Kích thước tập huấn luyện: X={X.shape}, y={y.shape}")
+    Xtr, Xval, ytr, yval = train_test_split(X, y, test_size=0.2, random_state=42)
+    
+    metrics = {}
+    
+    # 1. Random Forest (RF)
+    log("    -> Huấn luyện Random Forest...")
+    rf = RandomForestClassifier(n_estimators=200, random_state=42, n_jobs=-1, max_depth=10)
+    rf.fit(Xtr, ytr)
+    rf_path = os.path.join(save_dir, "rf_pernum_mega.joblib")
+    joblib.dump(rf, rf_path)
+    metrics["acc_rf"] = accuracy_score(yval, rf.predict(Xval))
+
+    # 2. XGBoost (GB)
+    gb_path = None
+    if HAS_XGB:
+        log("    -> Huấn luyện XGBoost...")
+        gb = XGBClassifier(n_estimators=200, use_label_encoder=False, 
+                           eval_metric="logloss", verbosity=0, random_state=42, 
+                           n_jobs=-1)
+        gb.fit(Xtr, ytr)
+        gb_path = os.path.join(save_dir, "gb_pernum_mega.joblib")
+        joblib.dump(gb, gb_path)
+        metrics["acc_gb"] = accuracy_score(yval, gb.predict(Xval))
+    
+    log(f"    -> Huấn luyện hoàn tất. RF Accuracy: {metrics.get('acc_rf'):.4f}")
+    
+    return rf_path, gb_path, metrics
+
+def ensemble_predict_topk(mega_df, power_df, rf_path=None, gb_path=None, topk=6, window=50):
+    """
+    Sử dụng mô hình và heuristic để dự đoán 6 con số cho Mega và Power.
+    """
+    log("    -> Bắt đầu dự đoán...")
+
+    # --- 1. DỰ ĐOÁN MEGA (Sử dụng Model Ensemble) ---
+    max_num_mega = 45
+    
+    # Tính tần suất trên cửa sổ cuối cùng (window)
+    mw = mega_df.tail(window)
+    pw = power_df.tail(window)
+    
+    m_counts = [0] * max_num_mega
+    p_counts_mega = [0] * max_num_mega
+    p_counts_full = [0] * 55 # Tính full cho Power Heuristic
+
+    for i in range(1, 7):
+        if f"n{i}" in mw.columns:
+            for v in mw[f"n{i}"].dropna().astype(int).tolist():
+                if 1 <= v <= max_num_mega:
+                    m_counts[v-1] += 1
+        
+        if f"n{i}" in pw.columns:
+            for v in pw[f"n{i}"].dropna().astype(int).tolist():
+                if 1 <= v <= 55:
+                    p_counts_full[v-1] += 1
+                    if 1 <= v <= max_num_mega:
+                        p_counts_mega[v-1] += 1
+
+
+    # Chuẩn bị ma trận đặc trưng cho lần dự đoán hiện tại
+    Xcur = []
+    for idx in range(max_num_mega):
+        m_c = m_counts[idx]
+        p_c = p_counts_mega[idx]
+        Xcur.append([m_c, p_c, m_c / (window * 6), p_c / (window * 6)])
+    Xcur = np.array(Xcur)
+
+    # Tải mô hình
+    rf = joblib.load(rf_path) if rf_path and os.path.exists(rf_path) else None
+    gb = joblib.load(gb_path) if gb_path and os.path.exists(gb_path) and HAS_XGB else None
+
+    # Tính điểm
+    if rf is None and gb is None:
+        log("    -> Cảnh báo: Không tìm thấy mô hình. Dùng Heuristic cơ bản cho Mega.")
+        # Heuristic Fallback: ưu tiên Mega + một phần Power
+        score_mega = np.array(m_counts) + 0.3 * np.array(p_counts_mega)
+    else:
+        probs_rf = rf.predict_proba(Xcur)[:,1] if rf is not None else 0
+        probs_gb = gb.predict_proba(Xcur)[:,1] if gb is not None else 0
+        
+        # Ensemble: Lấy trung bình các xác suất dự đoán
+        count = (1 if rf is not None else 0) + (1 if gb is not None else 0)
+        score_mega = (probs_rf + probs_gb) / count
+
+    # Chọn Top K cho Mega
+    idxs_mega = score_mega.argsort()[-topk:][::-1]
+    pred_nums_mega = sorted([int(i + 1) for i in idxs_mega])
+
+
+    # --- 2. DỰ ĐOÁN POWER (Sử dụng Heuristic dựa trên tần suất) ---
+    max_num_power = 55
+    
+    # Power Heuristic Score: Tần suất Power + trọng số nhỏ từ tần suất Mega
+    # Sử dụng p_counts_full đã tính ở trên.
+    score_power = np.array(p_counts_full)
+    
+    # Thêm trọng số từ Mega (chỉ cho các số 1-45, phần còn lại là 0)
+    mega_weights = np.array([m_counts[i] * 0.2 if i < max_num_mega else 0 for i in range(max_num_power)])
+    score_power = score_power + mega_weights
+
+    # Chọn Top K cho Power
+    idxs_power = score_power.argsort()[-topk:][::-1]
+    pred_nums_power = sorted([int(i + 1) for i in idxs_power])
+
+    probs_dict = {"mega_scores": score_mega.tolist(), "power_scores": score_power.tolist()}
+    
+    log("    -> Dự đoán hoàn tất.")
+    return pred_nums_mega, pred_nums_power, probs_dict
