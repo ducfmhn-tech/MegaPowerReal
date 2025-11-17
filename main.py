@@ -5,6 +5,10 @@ from utils.fetch_data import fetch_all_data
 from utils.email_utils import send_email
 
 LIMIT = 100
+mega_df, power_df = fetch_all_data(limit=LIMIT)
+
+print(f"🔥 Mega rows: {len(mega_df)}, Power rows: {len(power_df)}")
+LIMIT = 100
 REPORT_DIR = "./reports"
 os.makedirs(REPORT_DIR, exist_ok=True)
 today_str = datetime.now().strftime("%Y%m%d_%H%M%S")
