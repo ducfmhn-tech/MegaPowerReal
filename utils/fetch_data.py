@@ -34,17 +34,36 @@ def fetch_html(url, timeout_sec=30, retries=3, wait=1):
     return None
 
 def parse_table(html, url):
-    """Parse HTML and return standardized DataFrame with columns:
-    draw_date (datetime), n1..n6 (ints)."""
-    if not html:
-        return pd.DataFrame()
+    from io import StringIO
+    import pandas as pd
 
     try:
-        tables = pd.read_html(StringIO(html))
+        tables = pd.read_html(StringIO(html), flavor="lxml")
     except Exception as e:
-        print(f"❌ Lỗi đọc bảng từ {url}: {e}")
+        print(f"❌ pd.read_html error ({url}): {e}")
         return pd.DataFrame()
 
+    if len(tables) == 0:
+        print(f"⚠ Không tìm thấy bảng nào trong {url}")
+        return pd.DataFrame()
+
+    # Ưu tiên bảng lớn nhất
+    df = max(tables, key=lambda t: len(t))
+
+    # --- FIX LỖI MULTIINDEX ---
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = [
+            "_".join([str(c).strip() for c in col if str(c).strip() != ""])
+            for col in df.columns
+        ]
+    else:
+        df.columns = [str(c).strip() for c in df.columns]
+
+    # Loại bỏ các dòng trống
+    df = df.dropna(how="all")
+
+    return df
+    
     # Choose table: prefer table index 2 if many tables, else largest table
     if len(tables) >= 3:
         df = tables[2]
