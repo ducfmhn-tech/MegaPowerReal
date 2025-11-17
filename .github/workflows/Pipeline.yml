@@ -1,30 +1,29 @@
-name: CI/CD Pipeline cho MegaPowerReal (Python Only)
+name: CI/CD Pipeline MegaPowerReal (Python + Email)
 
 on:
   push:
     branches: [ "main", "master" ]
-  pull_request:
-    branches: [ "main", "master" ]
   workflow_dispatch:
 
 jobs:
-  ##############################
-  # JOB 1: BUILD & TEST (Python)
-  ##############################
-  build-and-test:
-    name: Build và Test (Python)
+  build-and-run:
     runs-on: ubuntu-latest
 
-    steps:
-      - name: Checkout mã nguồn
-        uses: actions/checkout@v4
+    env:
+      EMAIL_HOST: ${{ secrets.EMAIL_HOST }}
+      EMAIL_PORT: ${{ secrets.EMAIL_PORT }}
+      EMAIL_USER: ${{ secrets.EMAIL_USER }}
+      EMAIL_PASS: ${{ secrets.EMAIL_PASS }}
+      EMAIL_TO: ${{ secrets.EMAIL_TO }}
 
-      - name: Thiết lập Python 3.10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python 3.10
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
-      # --- Cache pip packages ---
       - name: Cache pip
         uses: actions/cache@v3
         with:
@@ -33,75 +32,15 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-pip-
 
-      - name: Cài đặt dependencies Python
+      - name: Install dependencies
         run: pip install --upgrade pip && pip install -r requirements.txt
 
-      - name: Kiểm tra các thư viện Python đã cài
-        run: pip list
-
-      - name: Chạy Pipeline Dự đoán Dữ liệu (main.py)
+      - name: Run Python pipeline
         run: python main.py
 
-      - name: Tải Artifact Build
+      - name: Upload report artifact
         uses: actions/upload-artifact@v4
         with:
-          name: python-artifact
-          path: ./
+          name: mega_power_report
+          path: ./reports
           retention-days: 1
-
-  ##############################
-  # JOB 2: DEPLOY TO STAGING
-  ##############################
-  deploy-staging:
-    name: Triển khai Staging
-    runs-on: ubuntu-latest
-    needs: [build-and-test]
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
-    environment:
-      name: Staging
-      url: https://staging.megapowerreal.com
-
-    steps:
-      - name: Tải Artifact Build
-        uses: actions/download-artifact@v4
-        with:
-          name: python-artifact
-          path: ./dist
-
-      - name: Triển khai Staging
-        run: |
-          echo "Đang triển khai các tệp từ ./dist lên môi trường Staging..."
-          echo "Triển khai Staging thành công! Phiên bản ${{ github.sha }}"
-
-  ##############################
-  # JOB 3: DEPLOY TO PRODUCTION (Manual)
-  ##############################
-  deploy-production:
-    name: Triển khai Production (Thủ công)
-    runs-on: ubuntu-latest
-    needs: [deploy-staging]
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
-    environment:
-      name: Production
-      url: https://www.megapowerreal.com
-
-    steps:
-      - name: Tải Artifact Build
-        uses: actions/download-artifact@v4
-        with:
-          name: python-artifact
-          path: ./dist
-
-      - name: Chờ phê duyệt thủ công
-        uses: trstringer/manual-approval@v1
-        with:
-          secret: ${{ secrets.GITHUB_TOKEN }}
-          approvers: 'ten_github_cua_ban'
-          minimum-approvals: 1
-          issue-title: "Phê duyệt triển khai Production cho ${{ github.sha }}"
-          issue-body: "Phiên bản này đã vượt qua Build và Test thành công, và đã triển khai trên Staging."
-
-      - name: Triển khai Production
-        run: |
-          echo "Đang triển khai các tệp từ ./dist lên môi trường Production..."
-          echo "Triển khai Production thành công! Phiên bản ${{ github.sha }}"
