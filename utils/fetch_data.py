@@ -1,160 +1,159 @@
-# utils/fetch_data.py
 import requests
 import pandas as pd
 from io import StringIO
-from time import sleep
+from datetime import datetime
+from utils.logger import log
 
+# -------------------------------------------------------------
+# Cấu hình request
+# -------------------------------------------------------------
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                  "AppleWebKit/537.36 (KHTML, like Gecko) "
+                  "Chrome/123.0 Safari/537.36"
 }
 
-def normalize_columns(df):
-    """Chuẩn hóa tên cột để không lỗi khi là MultiIndex."""
-    if isinstance(df.columns, pd.MultiIndex):
-        # flatten MultiIndex -> "col1_col2"
-        df.columns = [
-            "_".join([str(c).strip() for c in col if str(c).strip() != ""])
-            for col in df.columns
-        ]
-    else:
-        df.columns = [str(c).strip() for c in df.columns]
-    return df
+TIMEOUT = 30
 
-def fetch_html(url, timeout_sec=30, retries=3, wait=1):
-    """Fetch HTML with retry. Return text or None."""
-    for attempt in range(1, retries + 1):
-        try:
-            r = requests.get(url, headers=HEADERS, timeout=timeout_sec)
-            r.raise_for_status()
-            r.encoding = 'utf-8'
-            return r.text
-        except Exception as e:
-            print(f"❌ Lỗi fetch {url} (attempt {attempt}): {e}")
-            sleep(wait)
-    return None
 
-def parse_table(html, url):
-    from io import StringIO
-    import pandas as pd
+# -------------------------------------------------------------
+# Chuẩn hóa bảng về dạng (draw_date, n1..n6)
+# -------------------------------------------------------------
+def normalize_dataframe(df, url):
+    df.columns = df.columns.map(lambda x: str(x).strip())
 
-    try:
-        tables = pd.read_html(StringIO(html), flavor="lxml")
-    except Exception as e:
-        print(f"❌ pd.read_html error ({url}): {e}")
-        return pd.DataFrame()
-
-    if len(tables) == 0:
-        print(f"⚠ Không tìm thấy bảng nào trong {url}")
-        return pd.DataFrame()
-
-    # Ưu tiên bảng lớn nhất
-    df = max(tables, key=lambda t: len(t))
-
-    # --- FIX LỖI MULTIINDEX ---
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = [
-            "_".join([str(c).strip() for c in col if str(c).strip() != ""])
-            for col in df.columns
-        ]
-    else:
-        df.columns = [str(c).strip() for c in df.columns]
-
-    # Loại bỏ các dòng trống
-    df = df.dropna(how="all")
-
-    return df
-    
-    # Choose table: prefer table index 2 if many tables, else largest table
-    if len(tables) >= 3:
-        df = tables[2]
-    else:
-        df = max(tables, key=lambda x: x.shape[0], default=pd.DataFrame())
-
-    if df.empty:
-        return pd.DataFrame()
-
-    df = df.copy()
-    df = normalize_columns(df)
-    
-    # Heuristic to find date column
-    date_col = None
-    for c in df.columns:
-        low = c.lower()
-        if "ngày" in low or "date" in low or "time" in low:
-            date_col = c
-            break
-    if date_col is None:
+    # Tự động tìm cột ngày
+    date_cols = [c for c in df.columns if "ngày" in c.lower() or "date" in c.lower()]
+    if not date_cols:
+        # Một số website không có header → cột 0 là ngày
         date_col = df.columns[0]
+    else:
+        date_col = date_cols[0]
 
-    # Rename to draw_date
-    df = df.rename(columns={date_col: "draw_date"})
+    # Lấy 7 cột đầu nếu không rõ
+    df = df.iloc[:, :7]
+    df = df.copy()
+    df.columns = ["draw_date", "n1", "n2", "n3", "n4", "n5", "n6"]
 
-    # Heuristic to find numbers column: search columns containing at least 6 numbers in a cell
-    nums_col = None
-    for c in df.columns:
-        try:
-            sample = df[c].astype(str).head(20).tolist()
-        except Exception:
-            sample = []
-        matches = sum(1 for s in sample if len([t for t in s.replace('-', ' ').replace(',', ' ').split() if t.isdigit()]) >= 6)
-        if matches >= 1:
-            nums_col = c
-            break
+    # Chuẩn hóa ngày
+    try:
+        df["draw_date"] = df["draw_date"].astype(str)
+        df["draw_date"] = df["draw_date"].str.extract(r"(\d{1,2}/\d{1,2}/\d{4})")[0]
+        df["draw_date"] = pd.to_datetime(df["draw_date"], format="%d/%m/%Y", errors="coerce")
+    except:
+        pass
 
-    # If not found, assume second column
-    if nums_col is None and len(df.columns) >= 2:
-        nums_col = df.columns[1]
-    if nums_col is None:
-        print(f"⚠ Không tìm thấy cột số tại {url}")
-        return pd.DataFrame()
-
-    def extract_nums(x):
-        if pd.isna(x):
-            return [None]*6
-        s = str(x)
-        parts = s.replace('-', ' ').replace(',', ' ').split()
-        nums = [int(p) for p in parts if p.isdigit()]
-        if len(nums) >= 6:
-            return nums[:6]
-        # try to parse digits inside punctuation
-        import re
-        nums2 = re.findall(r'\d+', s)
-        nums2 = [int(n) for n in nums2]
-        if len(nums2) >= 6:
-            return nums2[:6]
-        # fallback None
-        return [None]*6
-
-    # apply extraction
-    nums_df = df[nums_col].apply(lambda v: pd.Series(extract_nums(v), index=["n1","n2","n3","n4","n5","n6"]))
-    df = pd.concat([df, nums_df], axis=1)
-
-    # parse draw_date
-    df["draw_date"] = pd.to_datetime(df["draw_date"], dayfirst=True, errors="coerce")
-    df = df.dropna(subset=["draw_date"])
-
-    # convert n1..n6 to integers where possible
-    for i in range(1,7):
-        col = f"n{i}"
+    # Ép số
+    for col in ["n1", "n2", "n3", "n4", "n5", "n6"]:
         df[col] = pd.to_numeric(df[col], errors="coerce").astype("Int64")
 
-    # keep only draw_date and n1..n6
-    result = df[["draw_date","n1","n2","n3","n4","n5","n6"]].copy()
-    return result
+    df = df.dropna(subset=["draw_date", "n1", "n2", "n3", "n4", "n5", "n6"])
 
-def fetch_all_sources(urls, limit=120):
-    """Fetch multiple URLs and merge results. Return latest `limit` rows."""
-    out = pd.DataFrame()
+    log(f"✔ Chuẩn hóa thành công bảng từ {url}: {len(df)} rows")
+    return df
+
+
+# -------------------------------------------------------------
+# Parse bảng HTML → DataFrame (không lỗi MultiIndex)
+# -------------------------------------------------------------
+def parse_table(html, url):
+    try:
+        tables = pd.read_html(StringIO(html))
+    except Exception as e:
+        log(f"❌ Không đọc được bảng HTML từ {url}: {e}")
+        return pd.DataFrame()
+
+    if not tables:
+        log(f"⚠ Không tìm thấy bảng HTML trên {url}")
+        return pd.DataFrame()
+
+    # Lấy bảng có nhiều dòng nhất
+    df = max(tables, key=lambda t: len(t))
+
+    if df.empty or len(df.columns) < 7:
+        log(f"⚠ Bảng không hợp lệ trên {url}")
+        return pd.DataFrame()
+
+    return normalize_dataframe(df, url)
+
+
+# -------------------------------------------------------------
+# Fetch 1 nguồn
+# -------------------------------------------------------------
+def fetch_one_source(url, limit=200):
+    log(f"🔹 Fetching {url} ...")
+
+    html = None
+
+    # Retry 3 lần
+    for attempt in range(1, 4):
+        try:
+            r = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
+            if r.status_code == 200:
+                html = r.text
+                break
+            else:
+                log(f"⚠ Lỗi HTTP {r.status_code} ({url}) attempt {attempt}")
+        except Exception as e:
+            log(f"❌ Lỗi fetch {url} (attempt {attempt}): {e}")
+
+    if not html:
+        log(f"❌ Bỏ qua {url} vì không fetch được.")
+        return pd.DataFrame()
+
+    df = parse_table(html, url)
+
+    if df.empty:
+        log(f"⚠ Không lấy được dữ liệu từ {url}")
+        return df
+
+    df = df.sort_values("draw_date", ascending=False).head(limit)
+
+    log(f"✔ Fetched {len(df)} rows from {url}")
+    return df
+
+
+# -------------------------------------------------------------
+# Fetch toàn bộ nguồn Mega / Power
+# -------------------------------------------------------------
+def fetch_all_sources(urls, limit=200):
+    all_rows = []
+
+    REQUIRED = ["draw_date", "n1", "n2", "n3", "n4", "n5", "n6"]
+
+    log(f"==== BẮT ĐẦU FETCH {len(urls)} NGUỒN ====")
+
     for url in urls:
-        print(f"🔹 Fetching {url} ...")
-        html = fetch_html(url)
-        df = parse_table(html, url)
-        print(f"✔ Fetched {len(df)} rows from {url}")
-        if not df.empty:
-            out = pd.concat([out, df], ignore_index=True)
-    if out.empty:
-        print("⚠ Không có dữ liệu hợp lệ từ các nguồn.")
-        return out
-    out = out.drop_duplicates(subset=["draw_date","n1","n2","n3","n4","n5","n6"])
-    out = out.sort_values(by="draw_date", ascending=False).reset_index(drop=True)
-    return out.head(limit)
+        df = fetch_one_source(url, limit)
+        if df is None or df.empty:
+            continue
+
+        # Đảm bảo cột đúng
+        df.columns = df.columns.map(str)
+
+        missing = [c for c in REQUIRED if c not in df.columns]
+        if missing:
+            log(f"⚠ Bỏ qua {url} vì thiếu cột {missing}")
+            continue
+
+        # Giữ đúng cột
+        df = df[REQUIRED]
+
+        all_rows.append(df)
+
+    if not all_rows:
+        log("❌ Không có dữ liệu hợp lệ từ bất kỳ nguồn nào!")
+        return pd.DataFrame(columns=REQUIRED)
+
+    out = pd.concat(all_rows, ignore_index=True)
+
+    # Xoá trùng
+    try:
+        out = out.drop_duplicates(subset=REQUIRED)
+    except Exception as e:
+        log(f"⚠ Không thể drop duplicates: {e}")
+
+    out = out.sort_values("draw_date", ascending=False).head(limit)
+
+    log(f"📌 Fetch xong: Mega/Power = {len(out)} rows hợp lệ")
+    return out
