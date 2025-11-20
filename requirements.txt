@@ -11,3 +11,4 @@ joblib
 flask
 pytest
 requests-mock
+beautifulsoup4
