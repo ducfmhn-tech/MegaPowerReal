@@ -8,6 +8,7 @@ from utils.stats import frequency_stats, pair_frequency_stats, repeat_stats
 from utils.heuristic import heuristic_predict
 from utils.predict import build_features, train_multioutput_rf, predict_next
 from utils.predict_advanced import load_model, ensemble_predict
+import utils.debug_wrapper
 import ssl
 from email.message import EmailMessage
 import smtplib
