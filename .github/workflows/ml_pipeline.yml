@@ -41,7 +41,10 @@ jobs:
           echo "PYTHONSTARTUP=${PYTHONSTARTUP}" >> $GITHUB_ENV
 
       - name: Run fetch + report
-        run: python main.py
+        run: |
+          echo "import utils.debug_wrapper" > pre.py
+          cat pre.py main.py > run_main.py
+          python run_main.py
         env:
           EMAIL_USER: ${{ secrets.SENDER_EMAIL }}
           EMAIL_PASS: ${{ secrets.SENDER_PASSWORD }}
