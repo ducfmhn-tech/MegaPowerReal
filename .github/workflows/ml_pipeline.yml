@@ -32,11 +32,14 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-      - name: Activate debug wrapper
-        run: python - <<EOF
-import utils.debug_wrapper
-EOF 
-      
+
+      # 🔥 FIX: Activate debug wrapper globally using PYTHONSTARTUP
+      - name: Enable debug HTML capture (persistent)
+        run: |
+          echo "import utils.debug_wrapper" > .python_startup_debug.py
+          export PYTHONSTARTUP="${PWD}/.python_startup_debug.py"
+          echo "PYTHONSTARTUP=${PYTHONSTARTUP}" >> $GITHUB_ENV
+
       - name: Run fetch + report
         run: python main.py
         env:
@@ -77,9 +80,9 @@ EOF
         if: always()
         uses: actions/upload-artifact@v4
         with:
-           name: debug-html
-           path: data/*.html
-           if-no-files-found: ignore
+          name: debug-html
+          path: data/*.html
+          if-no-files-found: ignore
 
       - name: Upload metrics artifact
         uses: actions/upload-artifact@v4
