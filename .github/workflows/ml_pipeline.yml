@@ -33,10 +33,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           
-      - name: Activate debug wrapper
-        run: python - <<EOF
-      import utils.debug_wrapper
-      EOF
+      
       - name: Run fetch + report
         run: python main.py
         env:
